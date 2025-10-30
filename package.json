@@ -1,17 +1,18 @@
 {
   "name": "ft-ticket-bot",
   "version": "1.0.0",
+  "description": "Bot for checking FT tickets",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "puppeteer-core": "^22.9.0",
-    "express": "^4.18.2",
-    "node-cron": "^3.0.3",
-    "axios": "^1.6.0"
+    "puppeteer-core": "^21.0.0",
+    "express": "^4.18.0",
+    "node-cron": "^3.0.0",
+    "axios": "^1.0.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.0.0"
   }
 }

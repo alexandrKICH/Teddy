@@ -6,7 +6,7 @@ const axios = require('axios');
 const config = {
   EMAIL: "persik.101211@gmail.com",
   PASSWORD: "vanya101112",
-  TELEGRAM_TOKEN: "8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c", // ЗАМЕНИ!
+  TELEGRAM_TOKEN: "8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c", // замени на реальный токен
   TELEGRAM_CHAT_ID: "587511371",
   TARGET_PERFORMANCES: [
     "Конотопська відьма",
@@ -28,9 +28,10 @@ async function sendTelegram(msg) {
   try {
     await axios.post(`https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: config.TELEGRAM_CHAT_ID,
-      text: msg
+      text: msg,
+      parse_mode: "HTML"
     });
-    console.log('📢 Telegram sent');
+    console.log('📢 Telegram message sent');
   } catch (e) {
     console.log('❌ Telegram error:', e.message);
   }
@@ -41,7 +42,7 @@ async function initBrowser() {
   const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
   console.log(`🔧 Using Chrome from: ${chromePath}`);
   
-  return await puppeteer.launch({
+  return puppeteer.launch({
     headless: true,
     executablePath: chromePath,
     args: [
@@ -61,12 +62,11 @@ async function initBrowser() {
 async function checkTickets() {
   console.log('🔍 Starting ticket check...');
   let browser;
-  
+
   try {
     browser = await initBrowser();
     const page = await browser.newPage();
-    
-    // Настройки
+
     await page.setViewport({ width: 1280, height: 800 });
     page.setDefaultNavigationTimeout(30000);
     page.setDefaultTimeout(15000);
@@ -82,29 +82,119 @@ async function checkTickets() {
     await page.type('input[name="email"]', config.EMAIL, { delay: 100 });
     await page.type('input[name="password"]', config.PASSWORD, { delay: 100 });
     await page.click('button[type="submit"]');
-    
-    // Ждем редирект
+
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
-    
+
     if (page.url().includes('/cabinet/profile')) {
       console.log('✅ Login successful');
       await sendTelegram('✅ Bot logged in successfully');
     } else {
-      throw new Error('Login failed - wrong credentials or captcha');
+      throw new Error('Login failed — wrong credentials or captcha');
     }
 
-    // Переходим на афишу
+    // Афиша
     console.log('🎭 Going to events page...');
     await page.goto('https://sales.ft.org.ua/events?hall=main', {
       waitUntil: 'networkidle2',
       timeout: 30000
     });
 
-    // Получаем все спектакли
-    const performances = await page.$$eval('.performanceCard', cards => 
+    const performances = await page.$$eval('.performanceCard', cards =>
       cards.map(card => {
         const title = card.querySelector('.performanceCard__title');
         const link = card.closest('a');
+        return {
+          name: title ? title.textContent.trim() : '',
+          url: link ? link.href : ''
+        };
+      }).filter(p => p.name && p.url)
+    );
+
+    console.log(`📊 Found ${performances.length} performances`);
+
+    const targetPerfs = performances.filter(p =>
+      config.TARGET_PERFORMANCES.some(target =>
+        p.name.toLowerCase().includes(target.toLowerCase())
+      )
+    );
+
+    console.log(`🎯 Target performances: ${targetPerfs.length}`);
+
+    if (targetPerfs.length === 0) {
+      console.log('❌ No target performances found');
+      return false;
+    }
+
+    // Проверяем каждый спектакль
+    for (const perf of targetPerfs) {
+      console.log(`🔍 Checking: ${perf.name}`);
+
+      try {
+        await page.goto(perf.url, { waitUntil: 'networkidle2' });
+        await page.waitForTimeout(2000);
+
+        const dates = await page.$$eval('.seatsAreOver__btn', buttons =>
+          buttons.map(btn => ({
+            text: btn.textContent.trim(),
+            href: btn.href
+          }))
+        );
+
+        console.log(`📅 Found ${dates.length} dates for ${perf.name}`);
+
+        for (const date of dates) {
+          console.log(`⏰ Checking date: ${date.text}`);
+
+          try {
+            await page.goto(date.href, { waitUntil: 'networkidle2' });
+            await page.waitForTimeout(3000);
+
+            const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
+
+            if (freeSeats.length >= 2) {
+              console.log(`🎉 FOUND ${freeSeats.length} TICKETS for ${perf.name} on ${date.text}!`);
+
+              const message = `🚨 <b>TICKETS FOUND!</b>\n\n🎭 <b>${perf.name}</b>\n📅 ${date.text}\n🎫 ${freeSeats.length} seats\n🔗 ${date.href}`;
+              await sendTelegram(message);
+
+              await browser.close();
+              return true;
+            } else {
+              console.log(`❌ No tickets for ${date.text}`);
+            }
+          } catch (dateError) {
+            console.log(`❌ Date check error: ${dateError.message}`);
+          }
+        }
+      } catch (perfError) {
+        console.log(`❌ Performance check error: ${perfError.message}`);
+      }
+    }
+
+    console.log('❌ No tickets found this round');
+    return false;
+
+  } catch (error) {
+    console.log('💥 Critical error:', error.message);
+    await sendTelegram(`❌ Bot error: ${error.message}`);
+    return false;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+// 🔄 Расписание — каждые 5 минут
+cron.schedule('*/5 * * * *', async () => {
+  console.log(`\n⏰ ${new Date().toLocaleString('uk-UA')} - Starting check`);
+  await checkTickets();
+  console.log(`⏰ ${new Date().toLocaleString('uk-UA')} - Check completed\n`);
+});
+
+// Первый запуск с задержкой
+console.log('🚀 FT Ticket Bot Started! Waiting for Chrome to initialize...');
+setTimeout(() => {
+  checkTickets();
+}, 10000);        const link = card.closest('a');
         return {
           name: title?.textContent?.trim() || '',
           url: link?.href || ''

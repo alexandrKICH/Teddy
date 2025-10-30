@@ -2,13 +2,15 @@
  * FT Ticket Bot
  *  • ищет спектакли «Конотопська відьма» и «Майстер і Маргарита»
  *  • уведомляет в Telegram, когда найдено ≥2 свободных места
- *  • работает на Render Free (puppeteer‑core + Chrome из install-chrome.sh)
+ *  • работает на Render Free (puppeteer-core + Chrome из /opt/google/chrome)
  */
 
 const puppeteer = require('puppeteer-core');
 const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 const config = {
   EMAIL: 'persik.101211@gmail.com',
@@ -38,19 +40,32 @@ async function sendTelegram(msg) {
       {
         chat_id: config.TELEGRAM_CHAT_ID,
         text: msg,
-        parse_mode: 'HTML'
-      }
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      },
+      { timeout: 10000 }
     );
     console.log('Telegram message sent');
   } catch (e) {
-    console.log('Telegram error:', e.response?.data || e.message);
+    console.log('Telegram error:', e.response?.data?.description || e.message);
   }
 }
 
 /* ------------------------------------------------- Browser ------------------------------------------------- */
 async function initBrowser() {
- const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-  console.log(`Using Chrome from: ${chromePath}`);
+  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome';
+
+  console.log(`Looking for Chrome at: ${chromePath}`);
+
+  // Проверка существования бинарника
+  if (!fs.existsSync(chromePath)) {
+    const errorMsg = `Chrome not found at ${chromePath}`;
+    console.error(errorMsg);
+    await sendTelegram(`<b>Bot startup failed:</b>\n${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
+  console.log(`Chrome found! Launching...`);
 
   return puppeteer.launch({
     headless: true,
@@ -64,31 +79,40 @@ async function initBrowser() {
       '--no-zygote',
       '--disable-extensions',
       '--disable-default-apps',
-      '--disable-component-extensions-with-background-pages'
-    ]
+      '--disable-component-extensions-with-background-pages',
+      '--disable-features=TranslateUI',
+      '--disable-ipc-flooding-protection'
+    ],
+    timeout: 60000
   });
 }
 
 /* ------------------------------------------------- Login ------------------------------------------------- */
 async function login(page) {
   console.log('Logging in...');
-  await page.goto('https://sales.ft.org.ua/cabinet/login', {
-    waitUntil: 'networkidle2',
-    timeout: 30000
-  });
+  try {
+    await page.goto('https://sales.ft.org.ua/cabinet/login', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
 
-  await page.waitForSelector('input[name="email"]', { timeout: 10000 });
-  await page.type('input[name="email"]', config.EMAIL, { delay: 100 });
-  await page.type('input[name="password"]', config.PASSWORD, { delay: 100 });
-  await page.click('button[type="submit"]');
+    await page.waitForSelector('input[name="email"]', { timeout: 10000 });
+    await page.type('input[name="email"]', config.EMAIL, { delay: 100 });
+    await page.type('input[name="password"]', config.PASSWORD, { delay: 100 });
+    await page.click('button[type="submit"]');
 
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
 
-  if (page.url().includes('/cabinet/profile')) {
-    console.log('Login successful');
-    return true;
+    if (page.url().includes('/cabinet/profile')) {
+      console.log('Login successful');
+      return true;
+    } else {
+      throw new Error(`Login failed – redirected to: ${page.url()}`);
+    }
+  } catch (err) {
+    console.log('Login error:', err.message);
+    throw err;
   }
-  throw new Error('Login failed – current URL: ' + page.url());
 }
 
 /* ------------------------------------------------- Ticket check ------------------------------------------------- */
@@ -112,13 +136,14 @@ async function checkTickets() {
       timeout: 30000
     });
 
+    // Получаем спектакли
     const performances = await page.$$eval('.performanceCard', cards =>
       cards
         .map(card => {
-          const title = card.querySelector('.performanceCard__title');
-          const link = card.closest('a');
-          const name = title ? title.textContent.trim() : '';
-          const url = link ? link.href : '';
+          const titleEl = card.querySelector('.performanceCard__title');
+          const linkEl = card.closest('a');
+          const name = titleEl ? titleEl.textContent.trim() : '';
+          const url = linkEl ? linkEl.href : '';
           return name && url ? { name, url } : null;
         })
         .filter(Boolean)
@@ -142,14 +167,14 @@ async function checkTickets() {
       console.log(`Checking: ${perf.name}`);
 
       try {
-        await page.goto(perf.url, { waitUntil: 'networkidle2' });
+        await page.goto(perf.url, { waitUntil: 'networkidle2', timeout: 30000 });
         await page.waitForTimeout(2000);
 
         const dates = await page.$$eval('.seatsAreOver__btn', btns =>
           btns.map(b => ({
             text: b.textContent.trim(),
             href: b.href
-          }))
+          })).filter(d => d.text && d.href)
         );
 
         console.log(`Found ${dates.length} dates for ${perf.name}`);
@@ -158,7 +183,7 @@ async function checkTickets() {
           console.log(`Checking date: ${date.text}`);
 
           try {
-            await page.goto(date.href, { waitUntil: 'networkidle2' });
+            await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 30000 });
             await page.waitForTimeout(3000);
 
             const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
@@ -178,7 +203,7 @@ ${freeSeats.length} seats available
               await sendTelegram(message);
               return true;
             } else {
-              console.log(`No tickets for ${date.text}`);
+              console.log(`No tickets for ${date.text} (${freeSeats.length} free)`);
             }
           } catch (dateError) {
             console.log(`Date check error: ${dateError.message}`);
@@ -193,10 +218,17 @@ ${freeSeats.length} seats available
     return false;
   } catch (error) {
     console.log('Critical error:', error.message);
-    await sendTelegram(`<b>Bot error:</b> ${error.message}`);
+    await sendTelegram(`<b>Bot error:</b>\n${error.message}`);
     return false;
   } finally {
-    if (browser) await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+        console.log('Browser closed');
+      } catch (e) {
+        console.log('Error closing browser:', e.message);
+      }
+    }
   }
 }
 
@@ -211,4 +243,7 @@ cron.schedule('*/5 * * * *', async () => {
 console.log('FT Ticket Bot Started!');
 
 // Первый запуск через 5 секунд
-setTimeout(() => checkTickets(), 5000);
+setTimeout(() => {
+  console.log('Initial check in 5 seconds...');
+  checkTickets();
+}, 5000);

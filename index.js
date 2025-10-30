@@ -5,12 +5,15 @@
  * • Render Free + puppeteer (Chrome в /tmp)
  */
 
-const puppeteer = require('puppeteer');
+// ВАЖНО: УСТАНАВЛИВАЕМ ПЕРЕМЕННУЮ ДО require('puppeteer')
+process.env.PUPPETEER_CACHE_DIR = '/tmp/puppeteer-cache';
+
+const fs = require('fs');
+const path = require('path');
+const puppeteer = require('puppeteer'); // Только после установки переменной!
 const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 
 const config = {
   EMAIL: 'persik.101211@gmail.com',
@@ -38,7 +41,7 @@ async function sendTelegram(msg) {
     await axios.post(
       `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`,
       {
-        chat_id: config.TELEGRAM_CHAT_ID,
+        chat_id: config.TELEGRAM_TOKEN,
         text: msg,
         parse_mode: 'HTML',
         disable_web_page_preview: true
@@ -55,10 +58,7 @@ async function sendTelegram(msg) {
 async function initBrowser() {
   console.log('Launching Puppeteer with Chrome in /tmp...');
 
-  // Принудительно ставим кэш в /tmp — там можно писать
-  const cacheDir = '/tmp/puppeteer-cache';
-  process.env.PUPPETEER_CACHE_DIR = cacheDir;
-
+  const cacheDir = process.env.PUPPETEER_CACHE_DIR;
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
     console.log(`Created cache directory: ${cacheDir}`);
@@ -68,7 +68,7 @@ async function initBrowser() {
     const executablePath = puppeteer.executablePath();
     console.log(`Chrome will be downloaded to: ${executablePath}`);
 
-    console.log('Launching browser... (first run may take 20–60 sec)');
+    console.log('Launching browser... (first run: 20–60 sec)');
     return await puppeteer.launch({
       headless: true,
       executablePath,
@@ -80,14 +80,9 @@ async function initBrowser() {
         '--single-process',
         '--no-zygote',
         '--disable-extensions',
-        '--disable-default-apps',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-features=TranslateUI',
-        '--disable-ipc-flooding-protection'
+        '--disable-default-apps'
       ],
-      timeout: 120000, // 2 минуты на скачивание
+      timeout: 120000,
       defaultViewport: { width: 1280, height: 800 }
     });
   } catch (error) {
@@ -244,8 +239,8 @@ cron.schedule('*/5 * * * *', async () => {
 
 console.log('FT Ticket Bot Started!');
 
-// Первый запуск через 15 сек — чтобы успел скачаться Chrome
+// Первый запуск через 20 сек — чтобы Chrome успел скачаться
 setTimeout(() => {
-  console.log('Initial check in 15 seconds...');
+  console.log('Initial check in 20 seconds...');
   checkTickets();
-}, 15000);
+}, 20000);

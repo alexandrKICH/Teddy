@@ -1,19 +1,24 @@
 #!/bin/bash
 set -e
 
-echo "Installing Google Chrome..."
+echo "Installing Google Chrome to /opt/google/chrome..."
 
+# Установка зависимостей
 apt-get update -y
-apt-get install -y wget gnupg ca-certificates
+apt-get install -y wget gnupg ca-certificates unzip
 
-wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
+# Скачиваем Chrome напрямую (без репозитория)
+CHROME_VERSION="130.0.6723.58"  # актуальную версию можно проверить на https://chromereleases.googleblog.com/
+CHROME_DEB="google-chrome-stable_${CHROME_VERSION}-1_amd64.deb"
 
-sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list'
+wget -q --show-progress "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chrome-linux64.zip" -O chrome.zip
+unzip chrome.zip -d /opt/google
 
-apt-get update -y
-apt-get install -y google-chrome-stable
+# Создаём символическую ссылку
+ln -sf /opt/google/chrome-linux64/chrome /usr/bin/google-chrome
 
-# ПРОВЕРКА
-google-chrome-stable --version || echo "Chrome install failed!"
+echo "Chrome installed at: /opt/google/chrome-linux64/chrome"
+echo "Symlink: /usr/bin/google-chrome"
 
-echo "Chrome installed!"
+# Проверка
+/usr/bin/google-chrome --version || echo "Chrome not found!"

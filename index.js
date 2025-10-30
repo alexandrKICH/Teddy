@@ -1,15 +1,17 @@
 /**
  * FT Ticket Bot
- *  • Поиск: "Конотопська відьма", "Майстер і Маргарита"
- *  • Уведомление в Telegram при ≥2 свободных местах
- *  • Render Free + puppeteer-core + Chrome из /opt
+ * • Поиск: "Конотопська відьма", "Майстер і Маргарита"
+ * • Уведомление в Telegram при ≥2 свободных местах
+ * • Render Free + puppeteer (автозагрузка Chrome)
  */
 
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const config = {
   EMAIL: 'persik.101211@gmail.com',
@@ -52,32 +54,48 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-  console.log(`Using Chrome from: ${chromePath}`);
+  console.log('Launching Puppeteer with auto-downloaded Chrome...');
 
-  if (!fs.existsSync(chromePath)) {
-    const errorMsg = `Chrome binary not found at ${chromePath}`;
-    console.error(errorMsg);
-    await sendTelegram(`Bot startup failed:\n${errorMsg}`);
-    throw new Error(errorMsg);
+  // Принудительно указываем кэш в /tmp (на Render — надёжно)
+  const cacheDir = path.join(os.tmpdir(), 'puppeteer-cache');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
   }
+  process.env.PUPPETEER_CACHE_DIR = cacheDir;
 
-  console.log('Launching browser...');
-  return puppeteer.launch({
-    headless: true,
-    executablePath: chromePath,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--no-zygote',
-      '--disable-extensions',
-      '--disable-default-apps'
-    ],
-    timeout: 60000
-  });
+  try {
+    const executablePath = puppeteer.executablePath();
+    console.log(`Chrome will be at: ${executablePath}`);
+
+    // Первый запуск — скачает Chrome (~100 МБ, 10–30 сек)
+    console.log('Launching browser...');
+    return await puppeteer.launch({
+      headless: true,
+      executablePath,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote',
+        '--disable-extensions',
+        '--disable-default-apps',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-features=TranslateUI',
+        '--disable-ipc-flooding-protection'
+      ],
+      timeout: 90000,
+      defaultViewport: { width: 1280, height: 800 }
+    });
+  } catch (error) {
+    const errMsg = `Browser launch failed: ${error.message}`;
+    console.error(errMsg);
+    await sendTelegram(`<b>Bot startup failed:</b>\n${errMsg}`);
+    throw error;
+  }
 }
 
 /* ------------------------------- Login ------------------------------- */
@@ -90,11 +108,11 @@ async function login(page) {
     });
 
     await page.waitForSelector('input[name="email"]', { timeout: 10000 });
-    await page.type('input[name="email"]', config.EMAIL, { delay: 100 });
-    await page.type('input[name="password"]', config.PASSWORD, { delay: 100 });
+    await page.type('input[name="email"]', config.EMAIL, { delay: 50 });
+    await page.type('input[name="password"]', config.PASSWORD, { delay: 50 });
     await page.click('button[type="submit"]');
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 });
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 });
 
     if (page.url().includes('/cabinet/profile')) {
       console.log('Login successful');
@@ -112,12 +130,9 @@ async function login(page) {
 async function checkTickets() {
   console.log('Starting ticket check...');
   let browser;
-
   try {
     browser = await initBrowser();
     const page = await browser.newPage();
-
-    await page.setViewport({ width: 1280, height: 800 });
     page.setDefaultNavigationTimeout(30000);
     page.setDefaultTimeout(15000);
 
@@ -142,7 +157,6 @@ async function checkTickets() {
     );
 
     console.log(`Found ${performances.length} performances`);
-
     const targetPerfs = performances.filter(p =>
       config.TARGET_PERFORMANCES.some(t =>
         p.name.toLowerCase().includes(t.toLowerCase())
@@ -155,10 +169,8 @@ async function checkTickets() {
       return false;
     }
 
-    // Цикл по спектаклям
     for (const perf of targetPerfs) {
       console.log(`Checking: ${perf.name}`);
-
       try {
         await page.goto(perf.url, { waitUntil: 'networkidle2', timeout: 30000 });
         await page.waitForTimeout(2000);
@@ -174,28 +186,22 @@ async function checkTickets() {
 
         console.log(`Found ${dates.length} dates for ${perf.name}`);
 
-        // Цикл по датам
         for (const date of dates) {
           console.log(`Checking date: ${date.text}`);
-
           try {
             await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 30000 });
             await page.waitForTimeout(3000);
 
             const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
-
             if (freeSeats.length >= 2) {
               console.log(`FOUND ${freeSeats.length} TICKETS for ${perf.name} on ${date.text}!`);
-
               const message = `
 <b>TICKETS FOUND!</b>
-
 <b>${perf.name}</b>
 ${date.text}
 ${freeSeats.length} seats available
 <a href="${date.href}">Open ticket page</a>
               `.trim();
-
               await sendTelegram(message);
               return true;
             } else {
@@ -238,8 +244,8 @@ cron.schedule('*/5 * * * *', async () => {
 
 console.log('FT Ticket Bot Started!');
 
-// Первый запуск
+// Первый запуск через 10 сек (чтобы успел скачаться Chrome)
 setTimeout(() => {
-  console.log('Initial check in 5 seconds...');
+  console.log('Initial check in 10 seconds...');
   checkTickets();
-}, 5000);
+}, 10000);

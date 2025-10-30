@@ -4,6 +4,7 @@
  */
 
 const fs = require('fs');
+const { install } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer');
 const express = require('express');
 const cron = require('node-cron');
@@ -147,12 +148,15 @@ async function initGlobalBrowser() {
   if (fs.existsSync('/nix/store')) {
     // Replit (NixOS)
     chromePath = '/nix/store/khk7xpgsm5insk81azy9d560yq4npf77-chromium-131.0.6778.204/bin/chromium';
+  } else if (fs.existsSync('/usr/bin/google-chrome-stable')) {
+    // Render (Ubuntu)
+    chromePath = '/usr/bin/google-chrome-stable';
   } else {
-    // Render - используем встроенный Chrome от Puppeteer
+    // Автоматический поиск (Puppeteer сам найдет)
     chromePath = undefined;
   }
 
-  console.log('Chrome path:', chromePath || 'bundled-chrome');
+  console.log('Chrome path:', chromePath || 'auto-detect');
 
   browser = await puppeteer.launch({
     headless: true,

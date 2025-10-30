@@ -18,7 +18,7 @@ const config = {
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
   TELEGRAM_CHAT_ID: '587511371',
-  TARGET_PERFORMANCES: ['Мартин Боруля', 'Земля', 'Річард III', 'Лимерівна', 'КОНОТОПСЬКА ВІДЬМА']
+  TARGET_PERFORMANCES: ['МАРІЯ СТЮАРТ', 'ТАРТЮФ', 'БЕЗТАЛАННА', 'КАЙДАШЕВА СІМ\'Я', 'КОНОТОПСЬКА ВІДЬМА']
 };
 
 // Файл для хранения истории броней
@@ -347,40 +347,50 @@ async function checkTickets() {
         console.log('HTML:', (await page.content()).substring(0, 1000));
       }
 
-      const targets = performances.filter(p =>
+      // Убираем дубликаты спектаклей
+      const uniqueTargets = [];
+      const seen = new Set();
+      performances.filter(p =>
         config.TARGET_PERFORMANCES.some(t => p.title.toLowerCase().includes(t.toLowerCase()))
-      );
+      ).forEach(p => {
+        if (!seen.has(p.href)) {
+          seen.add(p.href);
+          uniqueTargets.push(p);
+        }
+      });
 
-      console.log(`Целевые: ${targets.length > 0 ? targets.map(t => t.title).join(', ') : 'нет'}`);
+      console.log(`Целевые: ${uniqueTargets.length > 0 ? uniqueTargets.map(t => t.title).join(', ') : 'нет'}`);
 
-      for (const perf of targets) {
+      for (const perf of uniqueTargets) {
         console.log(`\nСПЕКТАКЛЬ: ${perf.title}`);
+        
+        // Проверяем состояние страницы перед навигацией
+        if (!page || page.isClosed()) {
+          console.log('Страница закрыта, перезапускаем проверку...');
+          return;
+        }
+        
         try {
           await page.goto(perf.href, { waitUntil: 'networkidle2', timeout: 90000 });
         } catch (navError) {
           if (navError.message.includes('Target closed') || 
               navError.message.includes('Session closed') || 
-              navError.message.includes('detached Frame')) {
-            console.log('Браузер/страница закрыта, перезапускаем проверку...');
+              navError.message.includes('detached Frame') ||
+              navError.message.includes('Cannot read properties of null')) {
+            console.log('Браузер/страница недоступна, перезапускаем проверку...');
             return;
           }
-          console.log('Таймаут навигации к спектаклю, повторяем...');
-          await delay(5000);
-          try {
-            await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
-          } catch (retryError) {
-            if (retryError.message.includes('detached Frame') || retryError.message.includes('destroyed')) {
-              console.log('Страница обновилась, перезапускаем проверку...');
-              return;
-            }
-            console.log('Повторная попытка не удалась, пропускаем...');
-            continue;
-          }
+          console.log('Таймаут навигации к спектаклю, пропускаем...');
+          continue;
         }
         await delay(3000 + Math.random() * 2000);
 
         let dates = [];
         try {
+          if (!page || page.isClosed()) {
+            console.log('Страница закрыта, перезапускаем проверку...');
+            return;
+          }
           dates = await page.$$eval('a.seatsAreOver__btn', btns =>
             btns.map(b => ({
               text: b.querySelector('span')?.innerText.trim(),
@@ -388,44 +398,48 @@ async function checkTickets() {
             })).filter(d => d.text && d.href)
           );
         } catch (contextError) {
-          console.log('Страница обновилась, перезапускаем проверку...');
-          return; // Полностью выходим из функции
+          console.log('Ошибка получения дат, пропускаем спектакль...');
+          continue;
         }
 
         console.log(`Дат: ${dates.length}`);
         for (const date of dates) {
           console.log(`  Дата: ${date.text}`);
+          
+          // Проверяем состояние перед навигацией
+          if (!page || page.isClosed()) {
+            console.log('Страница закрыта, перезапускаем проверку...');
+            return;
+          }
+          
           try {
             await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 90000 });
           } catch (navError) {
-            if (navError.message.includes('Target closed') || navError.message.includes('Session closed') || navError.message.includes('detached Frame')) {
-              console.log('Браузер/страница закрыта, перезапускаем проверку...');
+            if (navError.message.includes('Target closed') || 
+                navError.message.includes('Session closed') || 
+                navError.message.includes('detached Frame') ||
+                navError.message.includes('Cannot read properties of null')) {
+              console.log('Браузер/страница недоступна, перезапускаем проверку...');
               return;
             }
-            console.log('Таймаут навигации к дате, повторяем...');
-            await delay(5000);
-            try {
-              await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
-            } catch (retryError) {
-              if (retryError.message.includes('detached Frame') || retryError.message.includes('destroyed')) {
-                console.log('Страница обновилась, перезапускаем проверку...');
-                return;
-              }
-              console.log('Повторная попытка не удалась, пропускаем...');
-              continue;
-            }
+            console.log('Таймаут навигации к дате, пропускаем...');
+            continue;
           }
           await delay(4000 + Math.random() * 2000);
 
           let soldOutCheck = false;
           try {
+            if (!page || page.isClosed()) {
+              console.log('Страница закрыта, перезапускаем проверку...');
+              return;
+            }
             soldOutCheck = await page.evaluate(() => {
               const soldOutTitle = document.querySelector('.seatsAreOver__title');
               return soldOutTitle && soldOutTitle.innerText.includes('закінчились');
             });
           } catch (evalError) {
-            console.log('Страница обновилась во время проверки, перезапускаем...');
-            return; // Полностью выходим из функции
+            console.log('Ошибка проверки распродажи, пропускаем дату...');
+            continue;
           }
 
           if (soldOutCheck) {
@@ -435,6 +449,10 @@ async function checkTickets() {
 
           let seatsInfo;
           try {
+            if (!page || page.isClosed()) {
+              console.log('Страница закрыта, перезапускаем проверку...');
+              return;
+            }
             seatsInfo = await page.evaluate(() => {
             const allSeats = document.querySelectorAll('rect.tooltip-button');
             const result = {
@@ -472,6 +490,10 @@ async function checkTickets() {
           // Получаем все свободные места с информацией о ряде и месте
           let allFreeSeats = [];
           try {
+            if (!page || page.isClosed()) {
+              console.log('Страница закрыта, перезапускаем проверку...');
+              return;
+            }
             allFreeSeats = await page.evaluate(() => {
             const seats = [];
             document.querySelectorAll('rect.tooltip-button:not(.occupied):not(.picked)').forEach(seat => {
@@ -670,8 +692,27 @@ ${date.text}
   }
 }
 
+/* ------------------------------- SELF-PING для поддержания активности ------------------------------- */
+async function keepAlive() {
+  try {
+    const replUrl = process.env.REPL_SLUG && process.env.REPL_OWNER 
+      ? `https://${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co`
+      : `http://0.0.0.0:${PORT}`;
+    
+    await axios.get(replUrl, { timeout: 5000 });
+    console.log('✅ Self-ping успешен');
+  } catch (e) {
+    console.log('⚠️ Self-ping ошибка (это нормально на старте):', e.message);
+  }
+}
+
+// Пинг каждые 5 минут для поддержания активности
+setInterval(keepAlive, 5 * 60 * 1000);
+
 /* ------------------------------- CRON ------------------------------- */
 cron.schedule('*/3 * * * *', checkTickets);
 
 console.log('FT Bot запущен! Поиск:', config.TARGET_PERFORMANCES.join(', '));
+console.log('🔄 Автопинг активирован для поддержания проекта');
 setTimeout(checkTickets, 5000);
+setTimeout(keepAlive, 60000); // Первый пинг через 1 минуту

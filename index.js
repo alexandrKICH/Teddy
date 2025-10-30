@@ -6,7 +6,7 @@ const axios = require('axios');
 const config = {
   EMAIL: "persik.101211@gmail.com",
   PASSWORD: "vanya101112",
-  TELEGRAM_TOKEN: "7548123456:AAHjkasdjhfkjhasdkjfhaksjdhf", // замени на реальный токен
+  TELEGRAM_TOKEN: "7548123456:AAHjkasdjhfkjhasdkjfhaksjdhf",
   TELEGRAM_CHAT_ID: "587511371",
   TARGET_PERFORMANCES: [
     "Конотопська відьма",
@@ -99,12 +99,210 @@ function findAdjacentSeats(seats) {
     }
   });
   
-  // Ищем соседние места в каждом ряду
   for (const row in seatsByRow) {
     const rowSeats = seatsByRow[row].sort((a, b) => a.seatNum - b.seatNum);
     
     for (let i = 0; i < rowSeats.length - 1; i++) {
       if (rowSeats[i + 1].seatNum - rowSeats[i].seatNum === 1) {
+        return [rowSeats[i], rowSeats[i + 1]];
+      }
+    }
+  }
+  
+  return seats.slice(0, 2);
+}
+
+// Функция заполнения формы бронирования
+async function fillBookingForm(page) {
+  try {
+    console.log('✍️ Заполняю форму бронирования...');
+    
+    await page.waitForSelector('input[name="places[0][viewer_name]"]', { timeout: 5000 });
+    await page.type('input[name="places[0][viewer_name]"]', 'Кочкін Іван');
+    
+    const secondPlaceInput = await page.$('input[name="places[1][viewer_name]"]');
+    if (secondPlaceInput) {
+      await page.type('input[name="places[1][viewer_name]"]', 'Кочкін Іван');
+    }
+    
+    console.log('✅ Форма заполнена');
+    await sendTelegram('✅ БРОНЬ ГОТОВА! Переходи к оплате вручную');
+    
+  } catch (error) {
+    console.log(`❌ Ошибка заполнения формы: ${error.message}`);
+  }
+}
+
+// Функция проверки даты на наличие билетов
+async function checkDateForTickets(page, dateUrl, performanceName, dateText) {
+  console.log(`🔍 Проверяю дату: ${dateText}`);
+  
+  try {
+    await page.goto(dateUrl, { waitUntil: 'networkidle2' });
+    await page.waitForTimeout(2000);
+    
+    const freeSeats = await page.$$eval('rect.tooltip-button:not(.picked)', seats => 
+      seats.map(seat => ({
+        id: seat.id,
+        title: seat.getAttribute('title'),
+        dataTitle: seat.getAttribute('data-title')
+      }))
+    );
+    
+    console.log(`🎫 Свободных мест: ${freeSeats.length} на ${dateText}`);
+    
+    if (freeSeats.length >= 2) {
+      const adjacentSeats = findAdjacentSeats(freeSeats);
+      
+      if (adjacentSeats.length >= 2) {
+        console.log(`✅ Найдены соседние места! Бронируем...`);
+        
+        for (const seat of adjacentSeats.slice(0, 2)) {
+          await page.click(`#${seat.id}`);
+          await page.waitForTimeout(500);
+        }
+        
+        await page.click('button._f-order-btn');
+        await page.waitForNavigation({ waitUntil: 'networkidle2' });
+        
+        await fillBookingForm(page);
+        
+        const message = `🚨 УСПЕХ! Забронированы билеты на "${performanceName}" - ${dateText}`;
+        await sendTelegram(message);
+        
+        return true;
+      }
+    }
+    
+    return false;
+    
+  } catch (error) {
+    console.log(`❌ Ошибка проверки даты: ${error.message}`);
+    return false;
+  }
+}
+
+// Функция проверки спектакля
+async function checkPerformance(page, performanceUrl, performanceName) {
+  console.log(`🔍 Проверяю спектакль: ${performanceName}`);
+  
+  try {
+    await page.goto(performanceUrl, { waitUntil: 'networkidle2' });
+    await page.waitForTimeout(2000);
+
+    const dates = await page.$$eval('.seatsAreOver__btn', buttons => 
+      buttons.map(btn => ({
+        text: btn.textContent.trim(),
+        href: btn.href
+      }))
+    );
+
+    console.log(`📅 Найдено дат: ${dates.length} для ${performanceName}`);
+
+    for (const date of dates) {
+      const foundTickets = await checkDateForTickets(page, date.href, performanceName, date.text);
+      if (foundTickets) {
+        return true;
+      }
+    }
+    
+    return false;
+    
+  } catch (error) {
+    console.log(`❌ Ошибка проверки спектакля: ${error.message}`);
+    return false;
+  }
+}
+
+// Основная функция сканирования
+async function scanAllPerformances() {
+  console.log('🔄 Начинаю сканирование...');
+  let browser;
+
+  try {
+    browser = await initBrowser();
+    const page = await browser.newPage();
+    
+    page.setDefaultNavigationTimeout(30000);
+    page.setDefaultTimeout(10000);
+    
+    await login(page);
+    
+    await page.goto('https://sales.ft.org.ua/events?hall=main', { 
+      waitUntil: 'networkidle2' 
+    });
+    
+    let currentPage = 1;
+    let hasNextPage = true;
+    
+    while (hasNextPage) {
+      console.log(`📄 Проверяю страницу ${currentPage}`);
+      
+      const performances = await page.$$eval('.performanceCard', cards => 
+        cards.map(card => {
+          const title = card.querySelector('.performanceCard__title');
+          const link = card.closest('a');
+          return {
+            name: title ? title.textContent.trim() : '',
+            url: link ? link.href : ''
+          };
+        }).filter(p => p.name && p.url)
+      );
+      
+      console.log(`🎭 Найдено спектаклей: ${performances.length}`);
+      
+      const targetPerformances = performances.filter(p => 
+        config.TARGET_PERFORMANCES.some(target => 
+          p.name.toLowerCase().includes(target.toLowerCase())
+        )
+      );
+      
+      console.log(`🎯 Целевых спектаклей: ${targetPerformances.length}`);
+      
+      for (const perf of targetPerformances) {
+        if (perf.url) {
+          const foundTickets = await checkPerformance(page, perf.url, perf.name);
+          if (foundTickets) {
+            await browser.close();
+            return true;
+          }
+        }
+      }
+      
+      const nextButton = await page.$('a.pagination__btn[rel="next"]');
+      if (nextButton) {
+        await nextButton.click();
+        await page.waitForTimeout(3000);
+        currentPage++;
+      } else {
+        hasNextPage = false;
+      }
+    }
+    
+    console.log('🔚 Все спектакли проверены, билетов нет');
+    return false;
+    
+  } catch (error) {
+    console.log(`💥 Критическая ошибка: ${error.message}`);
+    await sendTelegram(`❌ Ошибка бота: ${error.message}`);
+    return false;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+// Расписание - каждые 5 минут
+cron.schedule('*/5 * * * *', async () => {
+  console.log(`\n⏰ ${new Date().toLocaleString('uk-UA')} - Starting check`);
+  await scanAllPerformances();
+  console.log(`⏰ ${new Date().toLocaleString('uk-UA')} - Check completed\n`);
+});
+
+// Первый запуск
+console.log('🚀 FT Ticket Bot Started!');
+setTimeout(() => {
+  scanAllPerformances();
+}, 5000);      if (rowSeats[i + 1].seatNum - rowSeats[i].seatNum === 1) {
         return [rowSeats[i], rowSeats[i + 1]];
       }
     }

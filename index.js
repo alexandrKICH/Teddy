@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer'); // ← puppeteer, не puppeteer-core
 const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
@@ -6,8 +6,8 @@ const axios = require('axios');
 const config = {
   EMAIL: "persik.101211@gmail.com",
   PASSWORD: "vanya101112",
-  TELEGRAM_TOKEN: "7548123456:AAHjkasdjhfkjhasdkjfhaksjdhf",
-  TELEGRAM_CHAT_ID: "587511371",
+  TELEGRAM_TOKEN: "8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c", // ← твой настоящий токен
+  TELEGRAM_CHAT_ID: "587511371", // ← проверь, если не приходят сообщения
   TARGET_PERFORMANCES: [
     "Конотопська відьма",
     "Майстер і Маргарита"
@@ -32,17 +32,15 @@ async function sendTelegram(msg) {
     });
     console.log('Telegram message sent');
   } catch (e) {
-    console.log('Telegram error:', e.message);
+    console.log('Telegram error:', e.response?.data || e.message);
   }
 }
 
 async function initBrowser() {
-  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-  console.log(`Using Chrome from: ${chromePath}`);
+  console.log('Launching browser (puppeteer will auto-download Chrome)...');
   
   return puppeteer.launch({
     headless: true,
-    executablePath: chromePath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -72,7 +70,7 @@ async function login(page) {
     console.log('Login successful');
     return true;
   } else {
-    throw new Error('Login failed');
+    throw new Error('Login failed: ' + page.url());
   }
 }
 
@@ -96,7 +94,7 @@ async function checkTickets() {
       timeout: 30000
     });
 
-    // Исправлено: фильтрация внутри $$eval
+    // Фильтрация внутри $$eval — без синтаксических ошибок
     const performances = await page.$$eval('.performanceCard', (cards) => {
       return cards
         .map((card) => {
@@ -106,7 +104,7 @@ async function checkTickets() {
           const url = link ? link.href : '';
           return name && url ? { name, url } : null;
         })
-        .filter(Boolean); // Убираем null/undefined
+        .filter(Boolean);
     });
 
     console.log(`Found ${performances.length} performances`);
@@ -152,9 +150,16 @@ async function checkTickets() {
             if (freeSeats.length >= 2) {
               console.log(`FOUND ${freeSeats.length} TICKETS for ${perf.name} on ${date.text}!`);
 
-              const message = `TICKETS FOUND!\n\n${perf.name}\n${date.text}\n${freeSeats.length} seats\n${date.href}`;
-              await sendTelegram(message);
+              const message = `
+<b>TICKETS FOUND!</b>
 
+<b>${perf.name}</b>
+${date.text}
+${freeSeats.length} seats
+${date.href}
+              `.trim();
+
+              await sendTelegram(message);
               return true;
             } else {
               console.log(`No tickets for ${date.text}`);
@@ -173,14 +178,14 @@ async function checkTickets() {
 
   } catch (error) {
     console.log('Critical error:', error.message);
-    await sendTelegram(`Bot error: ${error.message}`);
+    await sendTelegram(`<b>Bot error:</b> ${error.message}`);
     return false;
   } finally {
     if (browser) await browser.close();
   }
 }
 
-// Запуск каждые 5 минут
+// Каждые 5 минут
 cron.schedule('*/5 * * * *', async () => {
   console.log(`\n${new Date().toLocaleString('uk-UA')} - Starting check`);
   await checkTickets();
@@ -189,7 +194,7 @@ cron.schedule('*/5 * * * *', async () => {
 
 console.log('FT Ticket Bot Started!');
 
-// Первый запуск через 5 секунд после старта
+// Первый запуск через 5 секунд
 setTimeout(() => {
   checkTickets();
 }, 5000);

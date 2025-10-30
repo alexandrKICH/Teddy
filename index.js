@@ -1,12 +1,13 @@
 /**
  * FT Ticket Bot — Render Free
- * • Автозагрузка Chrome в /tmp через @puppeteer/browsers
- * • Работает 100%
+ * • Chrome через @puppeteer/browsers (latest)
+ * • Всё в /tmp
+ * • Без ошибок
  */
 
 const fs = require('fs');
 const path = require('path');
-const { install, resolveBuildId, launch } = require('@puppeteer/browsers');
+const { install, launch } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer');
 const express = require('express');
 const cron = require('node-cron');
@@ -16,11 +17,8 @@ const config = {
   EMAIL: 'persik.101211@gmail.com',
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
-  TELEGRAM_CHAT_ID: '587511371', // УБЕДИСЬ, ЧТО ЭТО ЧАТ С ПОЛЬЗОВАТЕЛЕМ, НЕ БОТОМ
-  TARGET_PERFORMANCES: [
-    'Конотопська відьма',
-    'Майстер і Маргарита'
-  ]
+  TELEGRAM_CHAT_ID: '587511371', // ← ТВОЙ ЛИЧНЫЙ ID (не бот!)
+  TARGET_PERFORMANCES: ['Конотопська відьма', 'Майстер і Маргарита']
 };
 
 const app = express();
@@ -30,22 +28,14 @@ app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 /* ------------------------------- Telegram ------------------------------- */
 async function sendTelegram(msg) {
-  if (!config.TELEGRAM_TOKEN || !config.TELEGRAM_CHAT_ID) {
-    console.log('Telegram config missing');
-    return;
-  }
+  if (!config.TELEGRAM_TOKEN || !config.TELEGRAM_CHAT_ID) return;
   try {
     await axios.post(
       `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`,
-      {
-        chat_id: config.TELEGRAM_CHAT_ID,
-        text: msg,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true
-      },
+      { chat_id: config.TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML', disable_web_page_preview: true },
       { timeout: 10000 }
     );
-    console.log('Telegram message sent');
+    console.log('Telegram sent');
   } catch (e) {
     console.log('Telegram error:', e.response?.data?.description || e.message);
   }
@@ -53,29 +43,26 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  console.log('Installing Chrome via @puppeteer/browsers...');
+  console.log('Installing Chrome (latest) in /tmp...');
 
-  const cacheDir = '/tmp/puppeteer-browsers';
+  const cacheDir = '/tmp/chrome-cache';
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
     console.log(`Created: ${cacheDir}`);
   }
 
   try {
-    const buildId = await resolveBuildId('chrome', 'stable');
-    console.log(`Resolved Chrome build: ${buildId}`);
-
     const browser = await install({
       browser: 'chrome',
-      buildId,
+      buildId: 'latest', // ← ПРОСТО latest
       cacheDir
     });
 
     const executablePath = browser.executablePath;
-    console.log(`Chrome installed at: ${executablePath}`);
+    console.log(`Chrome ready: ${executablePath}`);
 
-    console.log('Launching browser...');
-    return await launch({
+    console.log('Launching...');
+    const launched = await launch({
       browser: 'chrome',
       executablePath,
       headless: true,
@@ -89,32 +76,30 @@ async function initBrowser() {
       ],
       timeout: 60000
     });
+
+    return launched;
   } catch (error) {
-    console.error('Browser install/launch failed:', error.message);
-    await sendTelegram(`<b>Bot failed:</b>\n${error.message}`);
+    console.error('Browser failed:', error.message);
+    await sendTelegram(`<b>Бот упал:</b>\n${error.message}`);
     throw error;
   }
 }
 
 /* ------------------------------- Login ------------------------------- */
 async function login(page) {
-  console.log('Logging in...');
+  console.log('Login...');
   await page.goto('https://sales.ft.org.ua/cabinet/login', { waitUntil: 'networkidle2', timeout: 30000 });
-  await page.type('input[name="email"]', config.EMAIL, { delay: 50 });
-  await page.type('input[name="password"]', config.PASSWORD, { delay: 50 });
+  await page.type('input[name="email"]', config.EMAIL);
+  await page.type('input[name="password"]', config.PASSWORD);
   await page.click('button[type="submit"]');
   await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 });
-
-  if (page.url().includes('/cabinet/profile')) {
-    console.log('Login OK');
-    return true;
-  }
-  throw new Error('Login failed');
+  if (!page.url().includes('/cabinet/profile')) throw new Error('Login failed');
+  console.log('Logged in');
 }
 
 /* ------------------------------- Check Tickets ------------------------------- */
 async function checkTickets() {
-  console.log('Starting check...');
+  console.log('Checking tickets...');
   let browser;
   try {
     browser = await initBrowser();
@@ -150,7 +135,7 @@ async function checkTickets() {
 
         const free = await page.$$('rect.tooltip-button:not(.picked)');
         if (free.length >= 2) {
-          const msg = `<b>ЗНАЙДЕНО КВИТКИ!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} місць\n<a href="${date.href}">Відкрити</a>`;
+          const msg = `<b>ЗНАЙДЕНО!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} місць\n<a href="${date.href}">Відкрити</a>`;
           await sendTelegram(msg);
           return true;
         }
@@ -159,7 +144,7 @@ async function checkTickets() {
     console.log('No tickets');
     return false;
   } catch (err) {
-    await sendTelegram(`<b>Помилка:</b>\n${err.message}`);
+    await sendTelegram(`<b>Ошибка:</b>\n${err.message}`);
     return false;
   } finally {
     if (browser) await browser.close();
@@ -169,7 +154,7 @@ async function checkTickets() {
 /* ------------------------------- Scheduler ------------------------------- */
 cron.schedule('*/5 * * * *', async () => {
   const now = new Date().toLocaleString('uk-UA');
-  console.log(`\n${now} - Перевірка`);
+  console.log(`\n${now} - Check`);
   await checkTickets();
 });
 

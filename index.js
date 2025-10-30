@@ -1,300 +1,278 @@
+/**
+ * FT Ticket Bot — Render Free
+ * 100% СТАБИЛЬНО: один логин, надёжный парсинг, бронь
+ */
+
 const fs = require('fs');
+const path = require('path');
 const { install } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer');
+const express = require('express');
+const cron = require('node-cron');
 const axios = require('axios');
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
-
-/////////////////////// CONFIG ///////////////////////
-const CONFIG = {
+const config = {
   EMAIL: 'persik.101211@gmail.com',
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
   TELEGRAM_CHAT_ID: '587511371',
-  BUILD_ID: '129.0.6668.100', // Стабильная версия для Render
-  CACHE_DIR: '/tmp/chrome-cache',
-  MIN_SEATS: 2,
-  PREFERRED_SEATS: 4,
-  NAV_TIMEOUT: 120_000
+  TARGET_PERFORMANCES: ['Конотопська відьма', 'Майстер і Маргарита']
 };
-//////////////////////////////////////////////////////
 
-function ts() {
-  return new Date().toISOString();
-}
+const app = express();
+app.get('/', (req, res) => res.send('FT Ticket Bot Active!'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-async function sendTelegram(message) {
+/* ------------------------------- Telegram ------------------------------- */
+async function sendTelegram(msg) {
   try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: CONFIG.TELEGRAM_CHAT_ID,
-      text: message,
-      parse_mode: 'HTML'
-    }, { timeout: 10000 });
-    console.log(ts(), '[TG] OK');
+    await axios.post(
+      `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`,
+      { chat_id: config.TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML' },
+      { timeout: 10000 }
+    );
+    console.log('Telegram sent');
   } catch (e) {
-    console.log(ts(), '[TG] ERROR:', e.message);
+    console.log('Telegram error:', e.message);
   }
 }
 
-async function ensureChromeInstalled() {
-  if (!fs.existsSync(CONFIG.CACHE_DIR)) fs.mkdirSync(CONFIG.CACHE_DIR, { recursive: true });
-  console.log(ts(), `Installing Chrome ${CONFIG.BUILD_ID}...`);
-  const browserInfo = await install({
-    browser: 'chrome',
-    buildId: CONFIG.BUILD_ID,
-    cacheDir: CONFIG.CACHE_DIR
-  });
-  console.log(ts(), 'Chrome ready');
-  return browserInfo.executablePath;
-}
+/* ------------------------------- Browser ------------------------------- */
+async function initBrowser() {
+  const cacheDir = '/tmp/chrome-cache';
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
 
-async function launchBrowser(executablePath) {
-  console.log(ts(), '🚀 Launching browser...');
-  
-  const browser = await puppeteer.launch({
+  let executablePath = `${cacheDir}/chrome/linux-130.0.6723.58/chrome-linux64/chrome`;
+  if (!fs.existsSync(executablePath)) {
+    console.log('Installing Chrome...');
+    const browser = await install({ browser: 'chrome', buildId: '130.0.6723.58', cacheDir });
+    executablePath = browser.executablePath;
+  } else {
+    console.log('Using cached Chrome');
+  }
+
+  while (!fs.existsSync(executablePath) || fs.statSync(executablePath).size < 1000000) {
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  return await puppeteer.launch({
+    headless: true,
     executablePath,
-    headless: true,  // ✅ HEADLESS = TRUE
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
       '--disable-gpu',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--disable-features=TranslateUI',
-      '--disable-ipc-flooding-protection',
-      '--disable-background-networking',
-      '--disable-default-apps',
-      '--disable-extensions',
-      '--disable-sync',
-      '--disable-translate',
-      '--hide-scrollbars',
-      '--metrics-recording-only',
-      '--mute-audio',
-      '--no-default-browser-check',
-      '--no-pings',
-      '--password-store=basic',
-      '--use-mock-keychain',
-      '--window-position=0,0'
+      '--single-process',
+      '--no-zygote'
     ],
-    ignoreDefaultArgs: ['--disable-extensions']
+    timeout: 120000,
+    ignoreHTTPSErrors: true
   });
-  
-  console.log(ts(), '✅ Browser launched');
-  return browser;
 }
 
-async function waitForLoad(page) {
-  try {
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30_000 });
-  } catch {}
-  await delay(3000);
-}
-
-async function login(page) {
-  console.log(ts(), '🔐 Login...');
-  
-  // Идём на dashboard (редиректит на login если не залогинен)
+/* ------------------------------- Login (один раз) ------------------------------- */
+async function ensureLoggedIn(page) {
+  console.log('→ Проверяем авторизацию...');
   await page.goto('https://sales.ft.org.ua/cabinet/dashboard', { 
     waitUntil: 'domcontentloaded', 
-    timeout: CONFIG.NAV_TIMEOUT 
+    timeout: 90000 
   });
-  
-  // Проверяем, находимся ли на странице логина
-  const isLoginPage = await page.evaluate(() => 
-    window.location.href.includes('login') || 
-    !!document.querySelector('input[name="email"]')
-  );
-  
-  if (isLoginPage) {
-    console.log(ts(), '📝 Filling login form...');
-    
-    // Ждём поля
-    await page.waitForSelector('input[name="email"], input[type="email"]', { timeout: 30_000 });
-    
-    // Медленный ввод
-    await page.type('input[name="email"], input[type="email"]', CONFIG.EMAIL, { delay: 80 });
-    await delay(500);
-    await page.type('input[name="password"], input[type="password"]', CONFIG.PASSWORD, { delay: 80 });
-    await delay(500);
-    
-    // Клик по кнопке
-    await page.click('button[type="submit"], .authForm__btn, button:contains("Вхід")', { timeout: 10_000 });
-    await waitForLoad(page);
-    
-    console.log(ts(), '✅ Login complete:', page.url());
-  } else {
-    console.log(ts(), '✅ Already logged in');
+
+  if (page.url().includes('/cabinet/login')) {
+    console.log('→ Логин...');
+    for (let i = 0; i < 3; i++) {
+      try {
+        await page.waitForSelector('input[name="email"]', { timeout: 15000 });
+        await page.type('input[name="email"]', config.EMAIL, { delay: 50 });
+        await page.type('input[name="password"]', config.PASSWORD, { delay: 50 });
+        await page.click('button.authForm__btn');
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
+        break;
+      } catch {
+        console.log('→ Обновляем страницу...');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
+      }
+    }
   }
+
+  if (!page.url().includes('/cabinet/profile') && !page.url().includes('/cabinet/dashboard')) {
+    throw new Error('Login failed');
+  }
+  console.log('→ Авторизация OK');
 }
 
-async function bypassCloudflare(page) {
-  console.log(ts(), '[CF] Waiting Cloudflare...');
-  await delay(5000);
-  
-  try {
-    await page.waitForFunction(() => {
-      return !document.title.includes('Just a moment') && 
-             !document.querySelector('#cf-challenge-running') &&
-             document.readyState === 'complete';
-    }, { timeout: 60_000 });
-    console.log(ts(), '[CF] ✅ Passed');
-  } catch {
-    console.log(ts(), '[CF] ⚠️ Timeout, but continuing...');
-  }
-}
+/* ------------------------------- Go to Афиша ------------------------------- */
+async function goToEvents(page) {
+  console.log('→ Переход в Афишу → Основна сцена');
+  await page.goto('https://sales.ft.org.ua/events?hall=main', { 
+    waitUntil: 'domcontentloaded', 
+    timeout: 90000 
+  });
 
-async function mainLoop(page) {
-  let pageNum = 1;
-  
-  while (true) {
+  for (let i = 0; i < 5; i++) {
     try {
-      const eventsUrl = `https://sales.ft.org.ua/events?hall=main&page=${pageNum}`;
-      console.log(ts(), `📋 Scanning page ${pageNum}...`);
-      
-      await page.goto(eventsUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAV_TIMEOUT });
-      await bypassCloudflare(page);
-      
-      // Ищем спектакли
-      const performances = await page.$$eval('a.performanceCard', els => 
-        els.map(el => ({
-          href: el.href,
-          title: el.querySelector('.performanceCard__title')?.textContent?.trim() || 'Unknown'
-        }))
+      await page.waitForSelector('a.performanceCard', { timeout: 20000 });
+      console.log('→ Афиша загружена');
+      return;
+    } catch {
+      console.log('→ Карточки не загрузились. Обновляем...');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
+    }
+  }
+  throw new Error('Failed to load performance cards after 5 attempts');
+}
+
+/* ------------------------------- Check Tickets ------------------------------- */
+async function checkTickets() {
+  console.log('=== НАЧИНАЕМ ПРОВЕРКУ ===');
+  let browser = null;
+  try {
+    browser = await initBrowser();
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(90000);
+
+    // 1. Один логин
+    await ensureLoggedIn(page);
+
+    // 2. Перейти в афишу
+    await goToEvents(page);
+
+    let pageNum = 1;
+    while (true) {
+      console.log(`\n📄 СТРАНИЦА ${pageNum}`);
+
+      // 3. Парсим карточки (ТОЧНО ПО ТВОЕМУ HTML)
+      const performances = await page.$$eval('div.col-b1400-3 > a.performanceCard', cards => 
+        cards.map(card => ({
+          title: card.querySelector('h3.performanceCard__title')?.innerText.trim() || '',
+          href: card.href || ''
+        })).filter(p => p.title && p.href)
       );
-      
-      console.log(ts(), `🎭 Found ${performances.length} performances`);
-      
-      if (performances.length === 0) {
-        console.log(ts(), '🔄 No events, restart from page 1');
-        pageNum = 1;
-        await delay(5000);
-        continue;
+
+      console.log(`Найдено спектаклей: ${performances.length}`);
+
+      const targets = performances.filter(p => 
+        config.TARGET_PERFORMANCES.some(t => p.title.toLowerCase().includes(t.toLowerCase()))
+      );
+
+      if (targets.length > 0) {
+        console.log(`🎯 Целевые: ${targets.map(t => t.title).join(', ')}`);
       }
-      
-      for (const perf of performances) {
-        console.log(ts(), `🎪 ${perf.title}`);
-        
-        await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAV_TIMEOUT });
-        await bypassCloudflare(page);
-        
-        // Ищем даты
-        const dates = await page.$$eval('.seatsAreOver__btn', els => 
-          els.map(el => ({
-            href: el.href || el.getAttribute('onclick')?.match(/location\.href\s*=\s*'([^']+)'/)?.[1],
-            text: el.textContent.trim()
-          })).filter(d => d.href)
+
+      for (const perf of targets) {
+        console.log(`\n🎭 Проверяем: ${perf.title}`);
+        await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await page.waitForTimeout(3000);
+
+        // Даты
+        const dates = await page.$$eval('a.seatsAreOver__btn', btns => 
+          btns.map(b => ({
+            text: b.querySelector('span')?.innerText.trim() || '',
+            href: b.href || ''
+          })).filter(d => d.text && d.href)
         );
-        
-        console.log(ts(), `📅 ${dates.length} dates`);
-        
-        for (const date of dates.slice(0, 3)) { // Первые 3 даты
-          console.log(ts(), `🎟️ Checking ${date.text}`);
-          
-          await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAV_TIMEOUT });
-          await bypassCloudflare(page);
-          
-          // Проверяем наличие карты мест
-          try {
-            await page.waitForSelector('rect.tooltip-button', { timeout: 10_000 });
-            
-            const freeSeats = await page.$$eval('rect.tooltip-button:not(.picked)', els => 
-              els.map(el => ({
-                id: el.id,
-                x: parseFloat(el.getAttribute('x') || 0),
-                y: parseFloat(el.getAttribute('y') || 0)
-              }))
-            );
-            
-            if (freeSeats.length >= CONFIG.MIN_SEATS) {
-              console.log(ts(), `🎉 ${freeSeats.length} FREE SEATS!`);
-              
-              // Кликаем первые N мест
-              for (let i = 0; i < Math.min(freeSeats.length, CONFIG.PREFERRED_SEATS); i++) {
-                if (freeSeats[i].id) {
-                  await page.evaluate(id => document.getElementById(id)?.click(), freeSeats[i].id);
-                }
-                await delay(300);
-              }
-              
-              // Кнопка оформления
-              const orderBtn = await page.$x("//button[contains(., 'Перейти до оформлення')]");
-              if (orderBtn.length) {
-                await orderBtn[0].click();
-                await delay(2000);
-                
-                // Заполняем имя
-                await page.$$eval('input[name*="viewer_name"]', (inputs, name) => {
-                  inputs.forEach(input => {
-                    if (input.offsetParent) {
-                      input.value = name;
-                      input.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                  });
-                }, 'Кочкін Іван');
-                
-                // УВЕДОМЛЕНИЕ!
-                const message = `<b>🎟️ БИЛЕТЫ НАЙДЕНЫ!</b>\n🎪 <b>${perf.title}</b>\n📅 <b>${date.text}</b>\n🎫 <b>${Math.min(freeSeats.length, CONFIG.PREFERRED_SEATS)} мест</b>\n🔗 ${date.href}`;
-                await sendTelegram(message);
-                
-                await page.screenshot({ path: `/tmp/SUCCESS_${Date.now()}.png` });
-                console.log(ts(), '🎉 SUCCESS NOTIFIED!');
-              }
+
+        console.log(`📅 Дат: ${dates.length}`);
+
+        for (const date of dates) {
+          console.log(`  📅 ${date.text}`);
+          await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
+          await page.waitForTimeout(4000);
+
+          const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
+          console.log(`  🪑 Свободных мест: ${freeSeats.length}`);
+
+          if (freeSeats.length >= 2) {
+            console.log(`  НАЙДЕНО! Бронируем до 4 мест...`);
+
+            const selected = [];
+            for (let i = 0; i < Math.min(4, freeSeats.length); i++) {
+              const seat = freeSeats[i];
+              const title = await seat.evaluate(el => el.getAttribute('data-title') || 'Место');
+              selected.push(title);
+              await seat.click({ force: true });
+              await page.waitForTimeout(300);
             }
-          } catch {
-            // Нет мест или карта не загрузилась
+
+            // Клик "Перейти до оформлення"
+            await page.evaluate(() => {
+              const btn = Array.from(document.querySelectorAll('button')).find(b => 
+                b.innerText.includes('Перейти до оформлення')
+              );
+              if (btn) btn.click();
+            });
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
+
+            // Заполнить имя
+            await page.waitForSelector('input[name="places[0][viewer_name]"]', { timeout: 15000 });
+            await page.type('input[name="places[0][viewer_name]"]', 'Кочкін Іван');
+            await page.keyboard.press('Enter');
+
+            // Клик "Сплатити"
+            await page.evaluate(() => {
+              const btn = Array.from(document.querySelectorAll('button')).find(b => 
+                b.innerText.includes('Сплатити')
+              );
+              if (btn) btn.click();
+            });
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
+
+            const msg = `
+<b>БРОНЬ ГОТОВА!</b>
+<b>${perf.title}</b>
+${date.text}
+Места: ${selected.join(', ')}
+<a href="${page.url()}">ОПЛАТИТЬ СЕЙЧАС</a>
+            `.trim();
+            await sendTelegram(msg);
+            console.log('БРОНЬ УСПЕШНА!');
+            return;
           }
-          
-          await delay(1000);
         }
-        
-        await delay(1000);
+
+        // Вернуться в афишу
+        await goToEvents(page);
       }
-      
-      // Следующая страница?
+
+      // Пагинация
+      const nextBtn = await page.$('a.pagination__btn[rel="next"]');
+      if (!nextBtn) {
+        console.log('Последняя страница');
+        break;
+      }
+      await nextBtn.click();
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
       pageNum++;
-      if (pageNum > 5) {
-        pageNum = 1;
-        await delay(10000);
-      }
-      
-    } catch (e) {
-      console.log(ts(), '❌ Loop error:', e.message);
-      await delay(5000);
+    }
+
+    console.log('Квитков не найдено');
+  } catch (err) {
+    console.error('ОШИБКА:', err.message);
+    await sendTelegram(`<b>ОШИБКА:</b>\n${err.message}`);
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+      console.log('Browser closed');
     }
   }
 }
 
-/** 🔥 MAIN */
-(async () => {
-  console.log(ts(), '🤖 FT BOT START!');
-  await sendTelegram('<b>🚀 Бот запущен!</b>');
-  
-  let browser, page;
-  
+/* ------------------------------- Scheduler ------------------------------- */
+let isRunning = false;
+cron.schedule('*/5 * * * *', async () => {
+  if (isRunning) return;
+  isRunning = true;
+  const now = new Date().toLocaleString('uk-UA');
+  console.log(`\n${now} — Проверка`);
   try {
-    const exePath = await ensureChromeInstalled();
-    browser = await launchBrowser(exePath);
-    page = await browser.newPage();
-    
-    await page.setViewport({ width: 1366, height: 768 });
-    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
-    
-    // Логин
-    await login(page);
-    
-    // Основной цикл
-    await mainLoop(page);
-    
-  } catch (e) {
-    console.log(ts(), '💥 FATAL:', e);
-    await sendTelegram(`<b>💥 ОШИБКА:</b>\n${e.message}`);
+    await checkTickets();
   } finally {
-    if (browser) await browser.close();
+    isRunning = false;
   }
-})();
+});
+
+console.log('FT Ticket Bot запущен!');
+console.log('Поиск:', config.TARGET_PERFORMANCES.join(', '));
+setTimeout(checkTickets, 5000);

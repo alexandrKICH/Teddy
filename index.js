@@ -361,9 +361,8 @@ async function checkTickets() {
             })).filter(d => d.text && d.href)
           );
         } catch (contextError) {
-          console.log('Страница обновилась, пропускаем спектакль...');
-          await goToEvents();
-          continue;
+          console.log('Страница обновилась, перезапускаем проверку...');
+          return; // Полностью выходим из функции
         }
 
         console.log(`Дат: ${dates.length}`);
@@ -385,9 +384,8 @@ async function checkTickets() {
               return soldOutTitle && soldOutTitle.innerText.includes('закінчились');
             });
           } catch (evalError) {
-            console.log('Страница обновилась во время проверки, пропускаем дату...');
-            await goToEvents();
-            break;
+            console.log('Страница обновилась во время проверки, перезапускаем...');
+            return; // Полностью выходим из функции
           }
 
           if (soldOutCheck) {
@@ -424,9 +422,8 @@ async function checkTickets() {
             return result;
           });
           } catch (evalError) {
-            console.log('Страница обновилась во время сбора информации о местах, пропускаем дату...');
-            await goToEvents();
-            break;
+            console.log('Страница обновилась во время сбора информации, перезапускаем...');
+            return; // Полностью выходим из функции
           }
 
           console.log(`  Всего мест: ${seatsInfo.total}`);
@@ -464,9 +461,8 @@ async function checkTickets() {
             return seats;
           });
           } catch (evalError) {
-            console.log('Страница обновилась во время поиска свободных мест, пропускаем дату...');
-            await goToEvents();
-            break;
+            console.log('Страница обновилась во время поиска мест, перезапускаем...');
+            return; // Полностью выходим из функции
           }
 
           if (allFreeSeats.length >= 2) {

@@ -19,9 +19,8 @@ app.get('/', (req, res) => res.send('🎭 FT Ticket Bot Active!'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 
-// Telegram функция
 async function sendTelegram(msg) {
-  if (!config.TELEGRAM_TOKEN || config.TELEGRAM_TOKEN.includes('YOUR_TOKEN')) {
+  if (!config.TELEGRAM_TOKEN) {
     console.log('⚠️ Telegram token not set');
     return;
   }
@@ -37,7 +36,6 @@ async function sendTelegram(msg) {
   }
 }
 
-// Инициализация браузера
 async function initBrowser() {
   const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
   console.log(`🔧 Using Chrome from: ${chromePath}`);
@@ -51,14 +49,11 @@ async function initBrowser() {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--single-process',
-      '--no-zygote',
-      '--disable-web-security',
-      '--disable-features=VizDisplayCompositor'
+      '--no-zygote'
     ]
   });
 }
 
-// Функция логина
 async function login(page) {
   console.log('🔐 Logging in...');
   await page.goto('https://sales.ft.org.ua/cabinet/login', { 
@@ -75,36 +70,124 @@ async function login(page) {
 
   if (page.url().includes('/cabinet/profile')) {
     console.log('✅ Login successful');
-    await sendTelegram('✅ Bot logged in successfully');
     return true;
   } else {
-    throw new Error('Login failed — wrong credentials or captcha');
+    throw new Error('Login failed');
   }
 }
 
-// Функция поиска соседних мест
-function findAdjacentSeats(seats) {
-  const seatsByRow = {};
-  
-  seats.forEach(seat => {
-    const rowMatch = seat.dataTitle?.match(/Ряд[,\s]*(\d+)/);
-    if (rowMatch) {
-      const row = parseInt(rowMatch[1]);
-      const seatMatch = seat.dataTitle?.match(/Місце[,\s]*(\d+)/);
-      if (seatMatch) {
-        const seatNum = parseInt(seatMatch[1]);
-        if (!seatsByRow[row]) seatsByRow[row] = [];
-        seatsByRow[row].push({ ...seat, seatNum, row });
+async function checkTickets() {
+  console.log('🔍 Starting ticket check...');
+  let browser;
+
+  try {
+    browser = await initBrowser();
+    const page = await browser.newPage();
+
+    await page.setViewport({ width: 1280, height: 800 });
+    page.setDefaultNavigationTimeout(30000);
+    page.setDefaultTimeout(15000);
+
+    await login(page);
+
+    console.log('🎭 Going to events page...');
+    await page.goto('https://sales.ft.org.ua/events?hall=main', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    const performances = await page.$$eval('.performanceCard', (cards) => {
+      return cards.map((card) => {
+        const title = card.querySelector('.performanceCard__title');
+        const link = card.closest('a');
+        return {
+          name: title ? title.textContent.trim() : '',
+          url: link ? link.href : ''
+        };
+      }).filter((p) => p.name && p.url);
+    });
+
+    console.log(`📊 Found ${performances.length} performances`);
+
+    const targetPerfs = performances.filter(p =>
+      config.TARGET_PERFORMANCES.some(target =>
+        p.name.toLowerCase().includes(target.toLowerCase())
+      )
+    );
+
+    console.log(`🎯 Target performances: ${targetPerfs.length}`);
+
+    if (targetPerfs.length === 0) {
+      console.log('❌ No target performances found');
+      return false;
+    }
+
+    for (const perf of targetPerfs) {
+      console.log(`🔍 Checking: ${perf.name}`);
+
+      try {
+        await page.goto(perf.url, { waitUntil: 'networkidle2' });
+        await page.waitForTimeout(2000);
+
+        const dates = await page.$$eval('.seatsAreOver__btn', (buttons) => {
+          return buttons.map((btn) => ({
+            text: btn.textContent.trim(),
+            href: btn.href
+          }));
+        });
+
+        console.log(`📅 Found ${dates.length} dates for ${perf.name}`);
+
+        for (const date of dates) {
+          console.log(`⏰ Checking date: ${date.text}`);
+
+          try {
+            await page.goto(date.href, { waitUntil: 'networkidle2' });
+            await page.waitForTimeout(3000);
+
+            const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
+
+            if (freeSeats.length >= 2) {
+              console.log(`🎉 FOUND ${freeSeats.length} TICKETS for ${perf.name} on ${date.text}!`);
+
+              const message = `🚨 <b>TICKETS FOUND!</b>\n\n🎭 <b>${perf.name}</b>\n📅 ${date.text}\n🎫 ${freeSeats.length} seats\n🔗 ${date.href}`;
+              await sendTelegram(message);
+
+              return true;
+            } else {
+              console.log(`❌ No tickets for ${date.text}`);
+            }
+          } catch (dateError) {
+            console.log(`❌ Date check error: ${dateError.message}`);
+          }
+        }
+      } catch (perfError) {
+        console.log(`❌ Performance check error: ${perfError.message}`);
       }
     }
-  });
-  
-  for (const row in seatsByRow) {
-    const rowSeats = seatsByRow[row].sort((a, b) => a.seatNum - b.seatNum);
-    
-    for (let i = 0; i < rowSeats.length - 1; i++) {
-      if (rowSeats[i + 1].seatNum - rowSeats[i].seatNum === 1) {
-        return [rowSeats[i], rowSeats[i + 1]];
+
+    console.log('❌ No tickets found this round');
+    return false;
+
+  } catch (error) {
+    console.log('💥 Critical error:', error.message);
+    await sendTelegram(`❌ Bot error: ${error.message}`);
+    return false;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+cron.schedule('*/5 * * * *', async () => {
+  console.log(`\n⏰ ${new Date().toLocaleString('uk-UA')} - Starting check`);
+  await checkTickets();
+  console.log(`⏰ ${new Date().toLocaleString('uk-UA')} - Check completed\n`);
+});
+
+console.log('🚀 FT Ticket Bot Started!');
+setTimeout(() => {
+  checkTickets();
+}, 5000);        return [rowSeats[i], rowSeats[i + 1]];
       }
     }
   }

@@ -52,7 +52,7 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome';
+  const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
   console.log(`Using Chrome from: ${chromePath}`);
 
   if (!fs.existsSync(chromePath)) {

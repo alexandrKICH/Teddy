@@ -1,8 +1,10 @@
 services:
   - type: web
-    name: puppeteer-ticket-bot
+    name: ft-ticket-bot
     env: node
-    buildCommand: npm install
-    startCommand: npm start
     plan: free
-    autoDeploy: true
+    buildCommand: npm install && npm install puppeteer
+    startCommand: node index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18.18.0

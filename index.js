@@ -174,11 +174,11 @@ async function initGlobalBrowser() {
       '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
     ],
     defaultViewport: { width: 1366, height: 768 },
-    timeout: 120000
+    timeout: 90000
   });
 
   page = await browser.newPage();
-  page.setDefaultNavigationTimeout(90000);
+  page.setDefaultNavigationTimeout(60000);
 
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -308,11 +308,23 @@ async function goToEvents() {
 /* ------------------------------- Проверка ------------------------------- */
 async function checkTickets() {
   console.log('\n=== НОВАЯ ПРОВЕРКА ===');
-  if (!page) await initGlobalBrowser();
+  
+  try {
+    if (!page) await initGlobalBrowser();
 
-  const currentUrl = page.url();
-  if (!currentUrl.includes('cabinet') && !currentUrl.includes('events') && !currentUrl.includes('sales.ft.org.ua')) {
-    console.log('Сессия потеряна → перелогин');
+    const currentUrl = page.url();
+    if (!currentUrl.includes('cabinet') && !currentUrl.includes('events') && !currentUrl.includes('sales.ft.org.ua')) {
+      console.log('Сессия потеряна → перелогин');
+      await loginOnce();
+    }
+  } catch (browserError) {
+    console.log('Ошибка браузера, переинициализация...');
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
+    browser = null;
+    page = null;
+    await initGlobalBrowser();
     await loginOnce();
   }
 
@@ -344,11 +356,26 @@ async function checkTickets() {
       for (const perf of targets) {
         console.log(`\nСПЕКТАКЛЬ: ${perf.title}`);
         try {
-          await page.goto(perf.href, { waitUntil: 'networkidle2', timeout: 120000 });
+          await page.goto(perf.href, { waitUntil: 'networkidle2', timeout: 90000 });
         } catch (navError) {
+          if (navError.message.includes('Target closed') || 
+              navError.message.includes('Session closed') || 
+              navError.message.includes('detached Frame')) {
+            console.log('Браузер/страница закрыта, перезапускаем проверку...');
+            return;
+          }
           console.log('Таймаут навигации к спектаклю, повторяем...');
           await delay(5000);
-          await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          try {
+            await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          } catch (retryError) {
+            if (retryError.message.includes('detached Frame') || retryError.message.includes('destroyed')) {
+              console.log('Страница обновилась, перезапускаем проверку...');
+              return;
+            }
+            console.log('Повторная попытка не удалась, пропускаем...');
+            continue;
+          }
         }
         await delay(3000 + Math.random() * 2000);
 
@@ -369,11 +396,24 @@ async function checkTickets() {
         for (const date of dates) {
           console.log(`  Дата: ${date.text}`);
           try {
-            await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 120000 });
+            await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 90000 });
           } catch (navError) {
+            if (navError.message.includes('Target closed') || navError.message.includes('Session closed') || navError.message.includes('detached Frame')) {
+              console.log('Браузер/страница закрыта, перезапускаем проверку...');
+              return;
+            }
             console.log('Таймаут навигации к дате, повторяем...');
             await delay(5000);
-            await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            try {
+              await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            } catch (retryError) {
+              if (retryError.message.includes('detached Frame') || retryError.message.includes('destroyed')) {
+                console.log('Страница обновилась, перезапускаем проверку...');
+                return;
+              }
+              console.log('Повторная попытка не удалась, пропускаем...');
+              continue;
+            }
           }
           await delay(4000 + Math.random() * 2000);
 
@@ -608,7 +648,24 @@ ${date.text}
     console.log('Мест нет');
   } catch (err) {
     console.error('ОШИБКА:', err.message);
-    try { await page.screenshot({ path: '/tmp/debug.png', fullPage: true }); } catch {}
+    
+    // Если браузер закрыт или страница отсоединена, переинициализируем
+    if (err.message.includes('Target closed') || 
+        err.message.includes('Session closed') || 
+        err.message.includes('Protocol error') ||
+        err.message.includes('detached Frame') ||
+        err.message.includes('Execution context was destroyed')) {
+      console.log('Переинициализация браузера после ошибки...');
+      if (browser) {
+        try { await browser.close(); } catch {}
+      }
+      browser = null;
+      page = null;
+    } else {
+      try { 
+        if (page) await page.screenshot({ path: '/tmp/debug.png', fullPage: true }); 
+      } catch {}
+    }
     // Ошибки не отправляются в Telegram
   }
 }

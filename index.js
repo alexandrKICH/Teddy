@@ -202,8 +202,7 @@ setTimeout(() => {
           return {
             name: title ? title.textContent.trim() : '',
             url: link ? link.href : ''
-          };
-        })
+          }
         .filter((p) => p.name && p.url);
     });
     // ↑↑↑ исправлено: убран синтаксический конфликт map/filter

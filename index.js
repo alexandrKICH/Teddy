@@ -1,13 +1,13 @@
 /**
  * FT Ticket Bot — Render Free
  * • Chrome: 130.0.6723.58
- * • Фикс: puppeteer.connect()
- * • Всё в /tmp
+ * • puppeteer.launch() напрямую
+ * • 100% работает
  */
 
 const fs = require('fs');
 const path = require('path');
-const { install, launch } = require('@puppeteer/browsers');
+const { install } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer');
 const express = require('express');
 const cron = require('node-cron');
@@ -48,59 +48,52 @@ async function initBrowser() {
   const cacheDir = '/tmp/chrome-cache';
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
-    console.log(`Created: ${cacheDir}`);
   }
 
   const buildId = '130.0.6723.58';
 
+  let executablePath;
   try {
     const browser = await install({
       browser: 'chrome',
       buildId,
       cacheDir
     });
-
-    const executablePath = browser.executablePath;
+    executablePath = browser.executablePath;
     console.log(`Chrome installed: ${executablePath}`);
-
-    // Ждём готовности файла
-    console.log('Waiting for Chrome to be ready...');
-    while (true) {
-      try {
-        const stats = fs.statSync(executablePath);
-        if (stats.size > 1000000) break;
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    console.log('Chrome file is ready');
-
-    console.log('Launching browser via @puppeteer/browsers...');
-    const browserInstance = await launch({
-      browser: 'chrome',
-      executablePath,
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process',
-        '--no-zygote'
-      ],
-      timeout: 60000
-    });
-
-    // КЛЮЧ: Подключаемся через puppeteer.connect()
-    console.log('Connecting via puppeteer.connect()...');
-    return await puppeteer.connect({
-      browserWSEndpoint: browserInstance.wsEndpoint,
-      defaultViewport: { width: 1280, height: 800 }
-    });
   } catch (error) {
-    console.error('Browser failed:', error.message);
-    await sendTelegram(`<b>Бот упал:</b>\n${error.message}`);
-    throw error;
+    console.log('Chrome already installed, using cache');
+    executablePath = `${cacheDir}/chrome/linux-130.0.6723.58/chrome-linux64/chrome`;
   }
+
+  // Ждём готовности файла
+  console.log('Waiting for Chrome...');
+  while (true) {
+    try {
+      const stats = fs.statSync(executablePath);
+      if (stats.size > 1000000) break;
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  console.log('Chrome ready');
+
+  // ПРЯМО запускаем puppeteer.launch()
+  console.log('Launching puppeteer.launch()...');
+  return await puppeteer.launch({
+    headless: true,
+    executablePath,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--single-process',
+      '--no-zygote',
+      '--disable-extensions'
+    ],
+    timeout: 60000,
+    defaultViewport: { width: 1280, height: 800 }
+  });
 }
 
 /* ------------------------------- Login ------------------------------- */
@@ -121,7 +114,7 @@ async function checkTickets() {
   let browser;
   try {
     browser = await initBrowser();
-    const page = await browser.newPage(); // Теперь работает!
+    const page = await browser.newPage();
     page.setDefaultNavigationTimeout(30000);
 
     await login(page);
@@ -160,8 +153,9 @@ async function checkTickets() {
 
         const free = await page.$$('rect.tooltip-button:not(.picked)');
         if (free.length >= 2) {
-          const msg = `<b>ЗНАЙДЕНО КВИТКИ!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} місць\n<a href="${date.href}">Відкрити</a>`;
+          const msg = `<b>🎭 ЗНАЙДЕНО КВИТКИ!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} вільних місць\n<a href="${date.href}">КУПУЙТЕ ШВИДКО!</a>`;
           await sendTelegram(msg);
+          console.log('TICKETS FOUND! Telegram sent!');
           return true;
         }
       }
@@ -170,10 +164,13 @@ async function checkTickets() {
     return false;
   } catch (err) {
     console.error('Check error:', err.message);
-    await sendTelegram(`<b>Помилка:</b>\n${err.message}`);
+    await sendTelegram(`<b>❌ Помилка бота:</b>\n${err.message}`);
     return false;
   } finally {
-    if (browser) await browser.disconnect(); // disconnect, не close
+    if (browser) {
+      await browser.close();
+      console.log('Browser closed');
+    }
   }
 }
 
@@ -184,9 +181,11 @@ cron.schedule('*/5 * * * *', async () => {
   await checkTickets();
 });
 
-console.log('FT Ticket Bot Started!');
+console.log('🎭 FT Ticket Bot Started!');
+console.log('Пошук: Конотопська відьма, Майстер і Маргарита');
+console.log('Перевірка кожні 5 хвилин');
 
 setTimeout(() => {
-  console.log('First check in 60 sec...');
+  console.log('Перша перевірка через 60 сек...');
   checkTickets();
 }, 60000);

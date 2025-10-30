@@ -1,30 +1,25 @@
 #!/bin/bash
 set -e
 
-echo "Installing Chrome for Testing..."
+echo "Installing Google Chrome..."
 
-# Создаём папку
-mkdir -p /opt/google/chrome
+# Обновляем пакеты
+apt-get update -y
 
-# Скачиваем Chrome напрямую (официальный CDN)
-CHROME_VERSION="130.0.6723.58"
-wget -q --show-progress \
-  "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
-  -O /tmp/chrome.zip
+# Устанавливаем зависимости
+apt-get install -y wget gnupg ca-certificates
 
-# Распаковываем
-unzip -q /tmp/chrome.zip -d /opt/google/
+# Добавляем ключ Google
+wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
 
-# Создаём симлинк
-ln -sf /opt/google/chrome-linux64/chrome /usr/bin/google-chrome
+# Добавляем репозиторий
+echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
 
-# Проверка
-if [ -f "/usr/bin/google-chrome" ]; then
-  echo "Chrome installed: $(/usr/bin/google-chrome --version)"
-else
-  echo "Chrome install failed!"
-  exit 1
-fi
+# Обновляем и устанавливаем Chrome
+apt-get update -y
+apt-get install -y google-chrome-stable
 
-# Очистка
-rm -f /tmp/chrome.zip
+# Проверяем, что Chrome установлен
+google-chrome --version
+
+echo "Chrome installed successfully"

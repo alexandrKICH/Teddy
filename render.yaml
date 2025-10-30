@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: teddy
-    env: node
-    plan: free
-    buildCommand: ./install-chrome.sh && yarn install
-    startCommand: node index.js
-    envVars:
-      NODE_VERSION: 22.16.0

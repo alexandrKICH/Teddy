@@ -18,7 +18,10 @@ const config = {
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
   TELEGRAM_CHAT_ID: '587511371',
-  TARGET_PERFORMANCES: ['МАРІЯ СТЮАРТ', 'ТАРТЮФ', 'БЕЗТАЛАННА', 'КАЙДАШЕВА СІМ\'Я', 'КОНОТОПСЬКА ВІДЬМА']
+  // Группа 1: Балкон 1 ярусу, ряды 1-2
+  TARGET_BALCONY: ['КОНОТОПСЬКА ВІДЬМА', 'МАРІЯ СТЮАРТ', 'ТАРТЮФ', 'БЕЗТАЛАННА', 'КАЙДАШЕВА СІМ\'Я', 'МАКБЕТ'],
+  // Группа 2: Партер, ряды 6-10
+  TARGET_PARTER: ['ЗЕМЛЯ', 'КАЛІГУЛА', 'ЛИМЕРІВНА', 'INTERMEZZO', 'ТРАМВАЙ "БАЖАННЯ"', 'ЗАГНАНИЙ КІНЬ']
 };
 
 // Файл для хранения истории броней
@@ -350,8 +353,9 @@ async function checkTickets() {
       // Убираем дубликаты спектаклей
       const uniqueTargets = [];
       const seen = new Set();
+      const allTargets = [...config.TARGET_BALCONY, ...config.TARGET_PARTER];
       performances.filter(p =>
-        config.TARGET_PERFORMANCES.some(t => p.title.toLowerCase().includes(t.toLowerCase()))
+        allTargets.some(t => p.title.toUpperCase().includes(t.toUpperCase()))
       ).forEach(p => {
         if (!seen.has(p.href)) {
           seen.add(p.href);
@@ -371,32 +375,46 @@ async function checkTickets() {
         }
         
         try {
-          await page.goto(perf.href, { waitUntil: 'networkidle2', timeout: 90000 });
+          await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await delay(4000 + Math.random() * 2000);
+          
+          // Проверяем, что страница загрузилась корректно
+          const pageReady = await page.evaluate(() => {
+            return document.readyState === 'complete' || document.readyState === 'interactive';
+          }).catch(() => false);
+          
+          if (!pageReady) {
+            console.log('Страница не готова, пропускаем...');
+            continue;
+          }
         } catch (navError) {
           if (navError.message.includes('Target closed') || 
               navError.message.includes('Session closed') || 
               navError.message.includes('detached Frame') ||
+              navError.message.includes('Execution context was destroyed') ||
               navError.message.includes('Cannot read properties of null')) {
             console.log('Браузер/страница недоступна, перезапускаем проверку...');
             return;
           }
-          console.log('Таймаут навигации к спектаклю, пропускаем...');
+          console.log('Ошибка навигации к спектаклю, пропускаем...');
           continue;
         }
-        await delay(3000 + Math.random() * 2000);
 
         let dates = [];
         try {
-          if (!page || page.isClosed()) {
-            console.log('Страница закрыта, перезапускаем проверку...');
-            return;
-          }
+          // Ждем появления элементов с датами
+          await page.waitForSelector('a.seatsAreOver__btn', { timeout: 10000 }).catch(() => null);
+          await delay(1000);
+          
           dates = await page.$$eval('a.seatsAreOver__btn', btns =>
             btns.map(b => ({
               text: b.querySelector('span')?.innerText.trim(),
               href: b.href
             })).filter(d => d.text && d.href)
-          );
+          ).catch(err => {
+            console.log('Не удалось получить даты:', err.message);
+            return [];
+          });
         } catch (contextError) {
           console.log('Ошибка получения дат, пропускаем спектакль...');
           continue;
@@ -413,19 +431,30 @@ async function checkTickets() {
           }
           
           try {
-            await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 90000 });
+            await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await delay(5000 + Math.random() * 2000);
+            
+            // Проверяем готовность страницы
+            const ready = await page.evaluate(() => {
+              return document.readyState === 'complete' || document.readyState === 'interactive';
+            }).catch(() => false);
+            
+            if (!ready) {
+              console.log('Страница даты не готова, пропускаем...');
+              continue;
+            }
           } catch (navError) {
             if (navError.message.includes('Target closed') || 
                 navError.message.includes('Session closed') || 
                 navError.message.includes('detached Frame') ||
+                navError.message.includes('Execution context was destroyed') ||
                 navError.message.includes('Cannot read properties of null')) {
               console.log('Браузер/страница недоступна, перезапускаем проверку...');
               return;
             }
-            console.log('Таймаут навигации к дате, пропускаем...');
+            console.log('Ошибка навигации к дате, пропускаем...');
             continue;
           }
-          await delay(4000 + Math.random() * 2000);
 
           let soldOutCheck = false;
           try {
@@ -453,39 +482,55 @@ async function checkTickets() {
               console.log('Страница закрыта, перезапускаем проверку...');
               return;
             }
+            
+            // Ждем загрузки SVG с местами
+            await page.waitForSelector('rect.tooltip-button', { timeout: 10000 }).catch(() => null);
+            await delay(2000);
+            
             seatsInfo = await page.evaluate(() => {
-            const allSeats = document.querySelectorAll('rect.tooltip-button');
-            const result = {
-              total: allSeats.length,
-              free: 0,
-              occupied: 0,
-              picked: 0,
-              classes: {}
-            };
+              const allSeats = document.querySelectorAll('rect.tooltip-button');
+              const result = {
+                total: allSeats.length,
+                free: 0,
+                occupied: 0,
+                picked: 0,
+                classes: {}
+              };
 
-            allSeats.forEach(seat => {
-              const classList = Array.from(seat.classList).join(' ');
-              result.classes[classList] = (result.classes[classList] || 0) + 1;
+              allSeats.forEach(seat => {
+                const classList = Array.from(seat.classList).join(' ');
+                result.classes[classList] = (result.classes[classList] || 0) + 1;
 
-              if (seat.classList.contains('occupied')) result.occupied++;
-              else if (seat.classList.contains('picked')) result.picked++;
-              else {
-                const fill = seat.getAttribute('fill');
-                if (fill && fill !== '#ADADAD') {
-                  result.free++;
+                if (seat.classList.contains('occupied')) result.occupied++;
+                else if (seat.classList.contains('picked')) result.picked++;
+                else {
+                  const fill = seat.getAttribute('fill');
+                  if (fill && fill !== '#ADADAD') {
+                    result.free++;
+                  }
                 }
-              }
-            });
+              });
 
-            return result;
-          });
+              return result;
+            }).catch(err => {
+              console.log('Ошибка evaluate:', err.message);
+              return { total: 0, free: 0, occupied: 0, picked: 0, classes: {} };
+            });
           } catch (evalError) {
-            console.log('Страница обновилась во время сбора информации, перезапускаем...');
-            return; // Полностью выходим из функции
+            console.log('Ошибка сбора информации о местах, пропускаем...');
+            continue;
           }
 
           console.log(`  Всего мест: ${seatsInfo.total}`);
           console.log(`  Свободно: ${seatsInfo.free}, Занято: ${seatsInfo.occupied}`);
+
+          // Определяем тип спектакля (балкон или партер)
+          const isBalconyPerformance = config.TARGET_BALCONY.some(t => 
+            perf.title.toUpperCase().includes(t.toUpperCase())
+          );
+          const isParterPerformance = config.TARGET_PARTER.some(t => 
+            perf.title.toUpperCase().includes(t.toUpperCase())
+          );
 
           // Получаем все свободные места с информацией о ряде и месте
           let allFreeSeats = [];
@@ -494,37 +539,55 @@ async function checkTickets() {
               console.log('Страница закрыта, перезапускаем проверку...');
               return;
             }
-            allFreeSeats = await page.evaluate(() => {
-            const seats = [];
-            document.querySelectorAll('rect.tooltip-button:not(.occupied):not(.picked)').forEach(seat => {
-              const fill = seat.getAttribute('fill');
-              if (fill && fill !== '#ADADAD') {
-                const dataTitle = seat.getAttribute('data-title') || '';
-                const id = seat.getAttribute('id');
-                // Парсим: "Балкон 1 ярусу, 1 Ряд, 1 Місце"
-                const match = dataTitle.match(/(\d+)\s+Ряд,\s*(\d+)\s+Місце/);
-                if (match) {
-                  const section = dataTitle.split(',')[0].trim(); // Например, "Балкон 1 ярусу"
-                  const row = parseInt(match[1]);
+            
+            await delay(1000);
+            
+            allFreeSeats = await page.evaluate((isBalcony, isParter) => {
+              const seats = [];
+              document.querySelectorAll('rect.tooltip-button:not(.occupied):not(.picked)').forEach(seat => {
+                const fill = seat.getAttribute('fill');
+                if (fill && fill !== '#ADADAD') {
+                  const dataTitle = seat.getAttribute('data-title') || '';
+                  const id = seat.getAttribute('id');
+                  // Парсим: "Балкон 1 ярусу, 1 Ряд, 1 Місце" или "Партер, 6 Ряд, 5 Місце"
+                  const match = dataTitle.match(/(\d+)\s+Ряд,\s*(\d+)\s+Місце/);
+                  if (match) {
+                    const section = dataTitle.split(',')[0].trim();
+                    const row = parseInt(match[1]);
+                    const seatNum = parseInt(match[2]);
 
-                  // ТОЛЬКО "Балкон 1 ярусу" И ТОЛЬКО 1 ряд
-                  if (section === 'Балкон 1 ярусу' && row === 1) {
-                    seats.push({
-                      id,
-                      dataTitle,
-                      row,
-                      seat: parseInt(match[2]),
-                      section
-                    });
+                    // Для балконных спектаклей: Балкон 1 ярусу, ряды 1-2, места 1-18
+                    if (isBalcony && section === 'Балкон 1 ярусу' && row >= 1 && row <= 2 && seatNum >= 1 && seatNum <= 18) {
+                      seats.push({
+                        id,
+                        dataTitle,
+                        row,
+                        seat: seatNum,
+                        section
+                      });
+                    }
+
+                    // Для партерных спектаклей: Партер, ряды 6-10, места 5-8
+                    if (isParter && section === 'Партер' && row >= 6 && row <= 10 && seatNum >= 5 && seatNum <= 8) {
+                      seats.push({
+                        id,
+                        dataTitle,
+                        row,
+                        seat: seatNum,
+                        section
+                      });
+                    }
                   }
                 }
-              }
+              });
+              return seats;
+            }, isBalconyPerformance, isParterPerformance).catch(err => {
+              console.log('Ошибка evaluate при поиске мест:', err.message);
+              return [];
             });
-            return seats;
-          });
           } catch (evalError) {
-            console.log('Страница обновилась во время поиска мест, перезапускаем...');
-            return; // Полностью выходим из функции
+            console.log('Ошибка поиска мест, пропускаем...');
+            continue;
           }
 
           if (allFreeSeats.length >= 2) {
@@ -712,7 +775,9 @@ setInterval(keepAlive, 5 * 60 * 1000);
 /* ------------------------------- CRON ------------------------------- */
 cron.schedule('*/3 * * * *', checkTickets);
 
-console.log('FT Bot запущен! Поиск:', config.TARGET_PERFORMANCES.join(', '));
+console.log('FT Bot запущен!');
+console.log('📍 Балкон (ряды 1-2):', config.TARGET_BALCONY.join(', '));
+console.log('📍 Партер (ряды 6-10):', config.TARGET_PARTER.join(', '));
 console.log('🔄 Автопинг активирован для поддержания проекта');
 setTimeout(checkTickets, 5000);
 setTimeout(keepAlive, 60000); // Первый пинг через 1 минуту

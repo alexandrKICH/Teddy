@@ -1,8 +1,8 @@
 /**
  * FT Ticket Bot — Render Free
- * • Chrome через @puppeteer/browsers (latest)
+ * • Chrome через @puppeteer/browsers
+ * • buildId: 130.0.6723.58 (проверенный)
  * • Всё в /tmp
- * • Без ошибок
  */
 
 const fs = require('fs');
@@ -17,7 +17,7 @@ const config = {
   EMAIL: 'persik.101211@gmail.com',
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
-  TELEGRAM_CHAT_ID: '587511371', // ← ТВОЙ ЛИЧНЫЙ ID (не бот!)
+  TELEGRAM_CHAT_ID: '587511371', // ← ТВОЙ ЛИЧНЫЙ ID
   TARGET_PERFORMANCES: ['Конотопська відьма', 'Майстер і Маргарита']
 };
 
@@ -43,7 +43,7 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  console.log('Installing Chrome (latest) in /tmp...');
+  console.log('Installing Chrome (build 130.0.6723.58) in /tmp...');
 
   const cacheDir = '/tmp/chrome-cache';
   if (!fs.existsSync(cacheDir)) {
@@ -51,17 +51,19 @@ async function initBrowser() {
     console.log(`Created: ${cacheDir}`);
   }
 
+  const buildId = '130.0.6723.58'; // ← ПРОВЕРЕННЫЙ, СКАЧИВАЕТСЯ
+
   try {
     const browser = await install({
       browser: 'chrome',
-      buildId: 'latest', // ← ПРОСТО latest
+      buildId,
       cacheDir
     });
 
     const executablePath = browser.executablePath;
-    console.log(`Chrome ready: ${executablePath}`);
+    console.log(`Chrome installed: ${executablePath}`);
 
-    console.log('Launching...');
+    console.log('Launching browser...');
     const launched = await launch({
       browser: 'chrome',
       executablePath,
@@ -161,6 +163,6 @@ cron.schedule('*/5 * * * *', async () => {
 console.log('FT Ticket Bot Started!');
 
 setTimeout(() => {
-  console.log('First check in 30 sec...');
+  console.log('First check in 40 sec...');
   checkTickets();
-}, 30000);
+}, 40000);

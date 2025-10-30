@@ -2,7 +2,7 @@
  * FT Ticket Bot
  * • Поиск: "Конотопська відьма", "Майстер і Маргарита"
  * • Уведомление в Telegram при ≥2 свободных местах
- * • Render Free + puppeteer (автозагрузка Chrome)
+ * • Render Free + puppeteer (Chrome в /tmp)
  */
 
 const puppeteer = require('puppeteer');
@@ -10,7 +10,6 @@ const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const config = {
@@ -54,21 +53,22 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  console.log('Launching Puppeteer with auto-downloaded Chrome...');
+  console.log('Launching Puppeteer with Chrome in /tmp...');
 
-  // Принудительно указываем кэш в /tmp (на Render — надёжно)
-  const cacheDir = path.join(os.tmpdir(), 'puppeteer-cache');
+  // Принудительно ставим кэш в /tmp — там можно писать
+  const cacheDir = '/tmp/puppeteer-cache';
+  process.env.PUPPETEER_CACHE_DIR = cacheDir;
+
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
+    console.log(`Created cache directory: ${cacheDir}`);
   }
-  process.env.PUPPETEER_CACHE_DIR = cacheDir;
 
   try {
     const executablePath = puppeteer.executablePath();
-    console.log(`Chrome will be at: ${executablePath}`);
+    console.log(`Chrome will be downloaded to: ${executablePath}`);
 
-    // Первый запуск — скачает Chrome (~100 МБ, 10–30 сек)
-    console.log('Launching browser...');
+    console.log('Launching browser... (first run may take 20–60 sec)');
     return await puppeteer.launch({
       headless: true,
       executablePath,
@@ -87,7 +87,7 @@ async function initBrowser() {
         '--disable-features=TranslateUI',
         '--disable-ipc-flooding-protection'
       ],
-      timeout: 90000,
+      timeout: 120000, // 2 минуты на скачивание
       defaultViewport: { width: 1280, height: 800 }
     });
   } catch (error) {
@@ -244,8 +244,8 @@ cron.schedule('*/5 * * * *', async () => {
 
 console.log('FT Ticket Bot Started!');
 
-// Первый запуск через 10 сек (чтобы успел скачаться Chrome)
+// Первый запуск через 15 сек — чтобы успел скачаться Chrome
 setTimeout(() => {
-  console.log('Initial check in 10 seconds...');
+  console.log('Initial check in 15 seconds...');
   checkTickets();
-}, 10000);
+}, 15000);

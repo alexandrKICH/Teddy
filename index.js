@@ -201,7 +201,8 @@ console.log('🚀 FT Ticket Bot Started! Waiting for Chrome to initialize...');
 setTimeout(() => {
   checkTickets();
 }, 10000);    
-  } catch (error) {
+  } 
+catch (error) {
     console.log(`❌ Ошибка проверки спектакля: ${error.message}`);
     return false;
   }
@@ -311,7 +312,8 @@ async function fillBookingForm(page) {
     // Останавливаемся перед оплатой и отправляем сообщение
     await sendTelegram('✅ БРОНЬ ГОТОВА! Переходи к оплате вручную или настрой автоматическую оплату');
     
-  } catch (error) {
+  } 
+  catch (error) {
     console.log(`❌ Ошибка заполнения формы: ${error.message}`);
   }
 }
@@ -384,7 +386,8 @@ async function scanAllPerformances() {
     console.log('🔚 Все спектакли проверены, билетов нет');
     return false;
     
-  } catch (error) {
+  } 
+  catch (error) {
     console.log(`💥 Критическая ошибка: ${error.message}`);
     await sendTelegram(`❌ Ошибка бота: ${error.message}`);
     return false;

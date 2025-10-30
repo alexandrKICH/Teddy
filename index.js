@@ -1,7 +1,8 @@
 /**
  * FT Ticket Bot — Render Free
  * • Chrome: 130.0.6723.58
- * • Фикс ETXTBSY: задержка + проверка
+ * • Фикс: puppeteer.connect()
+ * • Всё в /tmp
  */
 
 const fs = require('fs');
@@ -62,21 +63,19 @@ async function initBrowser() {
     const executablePath = browser.executablePath;
     console.log(`Chrome installed: ${executablePath}`);
 
-    // Ждём, пока файл станет доступным (фикс ETXTBSY)
+    // Ждём готовности файла
     console.log('Waiting for Chrome to be ready...');
     while (true) {
       try {
         const stats = fs.statSync(executablePath);
-        if (stats.size > 1000000) break; // >1MB
-      } catch (e) {
-        // файл ещё не готов
-      }
+        if (stats.size > 1000000) break;
+      } catch (e) {}
       await new Promise(r => setTimeout(r, 1000));
     }
     console.log('Chrome file is ready');
 
-    console.log('Launching browser...');
-    return await launch({
+    console.log('Launching browser via @puppeteer/browsers...');
+    const browserInstance = await launch({
       browser: 'chrome',
       executablePath,
       headless: true,
@@ -89,6 +88,13 @@ async function initBrowser() {
         '--no-zygote'
       ],
       timeout: 60000
+    });
+
+    // КЛЮЧ: Подключаемся через puppeteer.connect()
+    console.log('Connecting via puppeteer.connect()...');
+    return await puppeteer.connect({
+      browserWSEndpoint: browserInstance.wsEndpoint,
+      defaultViewport: { width: 1280, height: 800 }
     });
   } catch (error) {
     console.error('Browser failed:', error.message);
@@ -115,7 +121,7 @@ async function checkTickets() {
   let browser;
   try {
     browser = await initBrowser();
-    const page = await browser.newPage();
+    const page = await browser.newPage(); // Теперь работает!
     page.setDefaultNavigationTimeout(30000);
 
     await login(page);
@@ -167,7 +173,7 @@ async function checkTickets() {
     await sendTelegram(`<b>Помилка:</b>\n${err.message}`);
     return false;
   } finally {
-    if (browser) await browser.close();
+    if (browser) await browser.disconnect(); // disconnect, не close
   }
 }
 
@@ -181,6 +187,6 @@ cron.schedule('*/5 * * * *', async () => {
 console.log('FT Ticket Bot Started!');
 
 setTimeout(() => {
-  console.log('First check in 45 sec...');
+  console.log('First check in 60 sec...');
   checkTickets();
-}, 45000);
+}, 60000);

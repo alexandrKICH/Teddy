@@ -1,8 +1,7 @@
 /**
  * FT Ticket Bot — Render Free
- * • Chrome через @puppeteer/browsers
- * • buildId: 130.0.6723.58 (проверенный)
- * • Всё в /tmp
+ * • Chrome: 130.0.6723.58
+ * • Фикс ETXTBSY: задержка + проверка
  */
 
 const fs = require('fs');
@@ -17,7 +16,7 @@ const config = {
   EMAIL: 'persik.101211@gmail.com',
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
-  TELEGRAM_CHAT_ID: '587511371', // ← ТВОЙ ЛИЧНЫЙ ID
+  TELEGRAM_CHAT_ID: '587511371', // ← ТВОЙ ID!
   TARGET_PERFORMANCES: ['Конотопська відьма', 'Майстер і Маргарита']
 };
 
@@ -43,7 +42,7 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  console.log('Installing Chrome (build 130.0.6723.58) in /tmp...');
+  console.log('Installing Chrome 130.0.6723.58...');
 
   const cacheDir = '/tmp/chrome-cache';
   if (!fs.existsSync(cacheDir)) {
@@ -51,7 +50,7 @@ async function initBrowser() {
     console.log(`Created: ${cacheDir}`);
   }
 
-  const buildId = '130.0.6723.58'; // ← ПРОВЕРЕННЫЙ, СКАЧИВАЕТСЯ
+  const buildId = '130.0.6723.58';
 
   try {
     const browser = await install({
@@ -63,8 +62,21 @@ async function initBrowser() {
     const executablePath = browser.executablePath;
     console.log(`Chrome installed: ${executablePath}`);
 
+    // Ждём, пока файл станет доступным (фикс ETXTBSY)
+    console.log('Waiting for Chrome to be ready...');
+    while (true) {
+      try {
+        const stats = fs.statSync(executablePath);
+        if (stats.size > 1000000) break; // >1MB
+      } catch (e) {
+        // файл ещё не готов
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    console.log('Chrome file is ready');
+
     console.log('Launching browser...');
-    const launched = await launch({
+    return await launch({
       browser: 'chrome',
       executablePath,
       headless: true,
@@ -78,8 +90,6 @@ async function initBrowser() {
       ],
       timeout: 60000
     });
-
-    return launched;
   } catch (error) {
     console.error('Browser failed:', error.message);
     await sendTelegram(`<b>Бот упал:</b>\n${error.message}`);
@@ -123,7 +133,13 @@ async function checkTickets() {
       config.TARGET_PERFORMANCES.some(t => p.name.toLowerCase().includes(t.toLowerCase()))
     );
 
+    if (targets.length === 0) {
+      console.log('No target performances');
+      return false;
+    }
+
     for (const perf of targets) {
+      console.log(`Checking: ${perf.name}`);
       await page.goto(perf.url, { waitUntil: 'networkidle2' });
       await page.waitForTimeout(2000);
 
@@ -132,21 +148,23 @@ async function checkTickets() {
       );
 
       for (const date of dates) {
+        console.log(`Date: ${date.text}`);
         await page.goto(date.href, { waitUntil: 'networkidle2' });
         await page.waitForTimeout(3000);
 
         const free = await page.$$('rect.tooltip-button:not(.picked)');
         if (free.length >= 2) {
-          const msg = `<b>ЗНАЙДЕНО!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} місць\n<a href="${date.href}">Відкрити</a>`;
+          const msg = `<b>ЗНАЙДЕНО КВИТКИ!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} місць\n<a href="${date.href}">Відкрити</a>`;
           await sendTelegram(msg);
           return true;
         }
       }
     }
-    console.log('No tickets');
+    console.log('No tickets found');
     return false;
   } catch (err) {
-    await sendTelegram(`<b>Ошибка:</b>\n${err.message}`);
+    console.error('Check error:', err.message);
+    await sendTelegram(`<b>Помилка:</b>\n${err.message}`);
     return false;
   } finally {
     if (browser) await browser.close();
@@ -156,13 +174,13 @@ async function checkTickets() {
 /* ------------------------------- Scheduler ------------------------------- */
 cron.schedule('*/5 * * * *', async () => {
   const now = new Date().toLocaleString('uk-UA');
-  console.log(`\n${now} - Check`);
+  console.log(`\n${now} - Перевірка`);
   await checkTickets();
 });
 
 console.log('FT Ticket Bot Started!');
 
 setTimeout(() => {
-  console.log('First check in 40 sec...');
+  console.log('First check in 45 sec...');
   checkTickets();
-}, 40000);
+}, 45000);

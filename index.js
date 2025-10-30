@@ -1,7 +1,7 @@
 const fs = require('fs');
-const { install } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { install } = require('@puppeteer/browsers');
 const axios = require('axios');
 
 puppeteer.use(StealthPlugin());
@@ -14,27 +14,22 @@ const CONFIG = {
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
   TELEGRAM_CHAT_ID: '587511371',
-  BUILD_ID: '131.0.6778.205', // Новее Chrome
+  BUILD_ID: '131.0.6778.205', 
   CACHE_DIR: '/tmp/chrome-cache',
   MIN_SEATS: 2,
-  PREFERRED_SEATS: 4,
-  NAV_TIMEOUT: 180_000,
-  SELECTOR_TIMEOUT: 180_000,
-  GLOBAL_LOOP_DELAY_MS: 5_000
+  PREFERRED_SEATS: 4
 };
 //////////////////////////////////////////////////////
 
-function ts() {
-  return new Date().toISOString();
-}
+function ts() { return new Date().toISOString(); }
 
 async function sendTelegram(message) {
   try {
-    await axios.post(
-      `https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`,
-      { chat_id: CONFIG.TELEGRAM_CHAT_ID, text: message, parse_mode: 'HTML' },
-      { timeout: 10000 }
-    );
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: CONFIG.TELEGRAM_CHAT_ID,
+      text: message,
+      parse_mode: 'HTML'
+    }, { timeout: 10000 });
     console.log(ts(), '[TG] OK');
   } catch (e) {
     console.log(ts(), '[TG] ERROR:', e.message);
@@ -54,259 +49,328 @@ async function ensureChromeInstalled() {
 }
 
 async function launchBrowser(executablePath) {
-  console.log(ts(), '🚀 Launching STEALTH browser...');
+  console.log(ts(), '🚀 Launching HEADLESS STEALTH browser...');
   
   const browser = await puppeteer.launch({
     executablePath,
-    headless: false, // 🔥 КЛЮЧЕВОЕ! Headless=true = Cloudflare блок
+    **headless: 'new'**,  // 🔥 НОВЫЙ HEADLESS (v23+)
     args: [
+      // БАЗОВЫЕ ДЛЯ RENDER
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--window-size=1366,768',
-      '--disable-web-security',
+      '--single-process',
+      '--no-zygote',
+      
+      // 🔥 CLOUDFLARE BYPASS
+      '--disable-blink-features=AutomationControlled',
       '--disable-features=VizDisplayCompositor',
+      '--disable-extensions',
+      '--disable-default-apps',
+      '--disable-component-extensions-with-background-pages',
+      
+      // X11/DISPLAY FIX
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-field-trial-config',
+      '--disable-ipc-flooding-protection',
+      
+      // СТАБИЛЬНОСТЬ
+      '--disable-hang-monitor',
+      '--disable-prompt-on-repost',
+      '--disable-client-side-phishing-detection',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--no-first-run',
+      '--enable-automation',
+      '--password-store=basic',
+      '--use-mock-keychain',
+      
+      // USER-AGENT
       '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    ]
+    ],
+    ignoreDefaultArgs: ['--enable-automation'],
+    timeout: 60_000
   });
   
-  console.log(ts(), '✅ Browser launched');
+  console.log(ts(), '✅ Browser launched SUCCESS!');
   return browser;
 }
 
 async function goTo(page, url, label = '') {
   console.log(ts(), `[NAV ${label}] -> ${url}`);
-  await page.goto(url, { 
-    waitUntil: 'networkidle2', 
-    timeout: CONFIG.NAV_TIMEOUT 
-  });
-  await delay(3000); // Доп. ожидание JS
-  console.log(ts(), `[NAV ${label}] ✅ ${page.url()}`);
+  try {
+    await page.goto(url, { 
+      waitUntil: 'networkidle2', 
+      timeout: 120_000 
+    });
+    await delay(5000); // Ждём Cloudflare/JS
+    console.log(ts(), `[NAV ${label}] ✅ ${page.url()}`);
+  } catch (e) {
+    console.log(ts(), `[NAV ${label}] ❌ ${e.message}`);
+    throw e;
+  }
 }
 
-async function waitForSelectorWithLog(page, selector, label, timeout = 60_000) {
+async function waitForSelector(page, selector, label, timeout = 60_000) {
   console.log(ts(), `[WAIT ${label}] ${selector}`);
-  await page.waitForSelector(selector, { timeout });
-  console.log(ts(), `[WAIT ${label}] ✅ OK`);
+  try {
+    await page.waitForSelector(selector, { timeout });
+    console.log(ts(), `[WAIT ${label}] ✅ OK`);
+    return true;
+  } catch {
+    console.log(ts(), `[WAIT ${label}] ❌ TIMEOUT`);
+    return false;
+  }
+}
+
+// 🔥 CLOUDFLARE BYPASS
+async function handleCloudflare(page) {
+  const title = await page.title();
+  if (title.includes('Just a moment') || title.includes('Checking')) {
+    console.log(ts(), '🔄 Cloudflare detected, waiting...');
+    await delay(10000);
+    // Имитируем скролл/движение мыши
+    await page.mouse.move(100, 100);
+    await page.mouse.move(200, 150);
+    await delay(5000);
+    console.log(ts(), '🔄 Cloudflare bypassed');
+  }
 }
 
 async function login(page) {
-  console.log(ts(), '🔐 ЛОГИН...');
+  console.log(ts(), '🔐 LOGIN...');
   
-  // Идём на dashboard (как в старой версии)
-  await goTo(page, 'https://sales.ft.org.ua/cabinet/dashboard', 'LOGIN');
+  await goTo(page, 'https://sales.ft.org.ua/cabinet/dashboard', 'DASHBOARD');
+  await handleCloudflare(page);
   
-  // Проверяем, нужно ли логиниться
-  if (page.url().includes('login')) {
-    console.log(ts(), '📝 Форма логина найдена');
+  // Проверяем URL на login
+  const currentUrl = page.url();
+  if (currentUrl.includes('login')) {
+    console.log(ts(), '📝 Login form found');
     
-    // Ждём поля email
-    await waitForSelectorWithLog(page, 'input[name="email"]', 'EMAIL');
-    
-    // Вводим данные МЕДЛЕННО
-    await page.type('input[name="email"]', CONFIG.EMAIL, { delay: 100 });
-    await delay(500);
-    await page.type('input[name="password"]', CONFIG.PASSWORD, { delay: 100 });
-    await delay(500);
-    
-    // Кликаем кнопку
-    const submitBtn = await page.$('button.authForm__btn, button[type="submit"]');
-    if (submitBtn) {
-      await submitBtn.click();
-      console.log(ts(), '✅ Кнопка отправлена');
-    } else {
-      await page.keyboard.press('Enter');
-    }
-    
-    // Ждём редирект
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30_000 });
-    console.log(ts(), '✅ Логин завершён:', page.url());
-  } else {
-    console.log(ts(), '✅ Уже залогинен');
-  }
-}
-
-async function checkSeats(page, perf, dateBtn, eventsUrl) {
-  console.log(ts(), `🎫 CHECK ${perf.title} | ${dateBtn.text}`);
-  
-  await goTo(page, dateBtn.href, 'SEATS');
-  
-  // Ждём карту мест
-  try {
-    await waitForSelectorWithLog(page, 'rect.tooltip-button', 'SEATMAP', 30_000);
-  } catch {
-    console.log(ts(), '❌ Нет карты мест');
-    return false;
-  }
-  
-  // Ищем свободные места
-  const freeSeats = await page.$$eval('rect.tooltip-button:not(.picked)', nodes =>
-    nodes.map(n => ({
-      id: n.id,
-      x: +n.getAttribute('x'),
-      y: +n.getAttribute('y'),
-      width: +n.getAttribute('width') || 20,
-      height: +n.getAttribute('height') || 20
-    }))
-  );
-  
-  console.log(ts(), `🎯 ${freeSeats.length} свободных мест`);
-  if (freeSeats.length < CONFIG.MIN_SEATS) return false;
-  
-  // Группируем по рядам и ищем подряд
-  const byRow = {};
-  freeSeats.forEach(s => {
-    const row = Math.round(s.y / 15) * 15;
-    byRow[row] = byRow[row] || [];
-    byRow[row].push(s);
-  });
-  
-  let bestRun = null;
-  for (const row of Object.values(byRow)) {
-    const sorted = row.sort((a, b) => a.x - b.x);
-    let run = [sorted[0]];
-    
-    for (let i = 1; i < sorted.length; i++) {
-      if (sorted[i].x - run[run.length - 1].x <= 25) {
-        run.push(sorted[i]);
+    // Ждём поля
+    if (await waitForSelector(page, 'input[name="email"]', 'EMAIL', 30000)) {
+      await page.type('input[name="email"]', CONFIG.EMAIL, { delay: 150 });
+      await delay(800);
+      await page.type('input[name="password"]', CONFIG.PASSWORD, { delay: 150 });
+      await delay(800);
+      
+      // Кнопка
+      const btn = await page.$('button[type="submit"], button.authForm__btn');
+      if (btn) {
+        await btn.click();
       } else {
-        if (run.length >= CONFIG.MIN_SEATS && (!bestRun || run.length > bestRun.length)) {
-          bestRun = run.slice(0, CONFIG.PREFERRED_SEATS);
-        }
-        run = [sorted[i]];
+        await page.keyboard.press('Enter');
       }
-    }
-    if (run.length >= CONFIG.MIN_SEATS && (!bestRun || run.length > bestRun.length)) {
-      bestRun = run.slice(0, CONFIG.PREFERRED_SEATS);
-    }
-  }
-  
-  if (!bestRun) {
-    console.log(ts(), '❌ Нет подряд мест');
-    return false;
-  }
-  
-  console.log(ts(), `✅ НАШЛИ ${bestRun.length} МЕСТ ПОДРЯД!`);
-  
-  // Кликаем места
-  for (const seat of bestRun) {
-    if (seat.id) {
-      await page.eval(`document.getElementById('${seat.id}').click()`);
+      
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+      console.log(ts(), '✅ LOGIN SUCCESS:', page.url());
     } else {
-      const cx = seat.x + seat.width / 2;
-      const cy = seat.y + seat.height / 2;
-      await page.mouse.click(cx, cy);
+      console.log(ts(), '❌ Email field not found');
     }
-    await delay(400);
+  } else {
+    console.log(ts(), '✅ Already logged in');
   }
-  
-  // Кнопка "Перейти до оформлення"
-  try {
-    const orderBtn = await page.$x("//button[contains(text(), 'Перейти до оформлення')]");
-    if (orderBtn.length) {
-      await orderBtn[0].click();
-      await delay(2000);
-      
-      // Заполняем имя
-      const nameInputs = await page.$$('input[name*="viewer_name"]');
-      for (const input of nameInputs) {
-        await input.type('Кочкін Іван');
-      }
-      
-      // Уведомляем!
-      const message = `<b>🎟️ БИЛЕТЫ НАЙДЕНЫ!</b>\n${perf.title}\n${dateBtn.text}\n${bestRun.length} мест\n🔗 ${dateBtn.href}`;
-      await sendTelegram(message);
-      
-      // Скриншот
-      await page.screenshot({ path: `/tmp/success_${Date.now()}.png` });
-      
-      return true;
-    }
-  } catch (e) {
-    console.log(ts(), '❌ Ошибка оформления:', e.message);
-  }
-  
-  return false;
 }
 
-async function scanEvents(page) {
+async function mainLoop(page) {
   let pageNum = 1;
   
   while (true) {
     try {
-      const url = `https://sales.ft.org.ua/events?hall=main&page=${pageNum}`;
-      await goTo(page, url, `PAGE-${pageNum}`);
+      const eventsUrl = `https://sales.ft.org.ua/events?hall=main&page=${pageNum}`;
+      await goTo(page, eventsUrl, `EVENTS-${pageNum}`);
+      await handleCloudflare(page);
       
-      const events = await page.$$eval('a.performanceCard', els =>
-        els.map(el => ({
+      // Ищем перформансы
+      const events = await page.evaluate(() => 
+        Array.from(document.querySelectorAll('a.performanceCard')).map(el => ({
           href: el.href,
           title: el.querySelector('.performanceCard__title')?.textContent?.trim() || ''
         }))
       );
       
-      console.log(ts(), `📋 Страница ${pageNum}: ${events.length} событий`);
+      console.log(ts(), `📋 Page ${pageNum}: ${events.length} events`);
+      
+      if (events.length === 0) {
+        console.log(ts(), '🔄 No events, restart from page 1');
+        pageNum = 1;
+        await delay(5000);
+        continue;
+      }
       
       for (const event of events) {
-        await goTo(page, event.href, `EVENT-${event.title}`);
+        console.log(ts(), `🎭 Checking: ${event.title}`);
         
-        const dates = await page.$$eval('.seatsAreOver__btn', els =>
-          els.map(el => ({
+        await goTo(page, event.href, `PERF-${event.title}`);
+        await handleCloudflare(page);
+        
+        // Ищем даты
+        const dates = await page.evaluate(() => 
+          Array.from(document.querySelectorAll('.seatsAreOver__btn')).map(el => ({
             href: el.href || el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1],
             text: el.textContent.trim()
           })).filter(d => d.href)
         );
         
+        console.log(ts(), `📅 ${dates.length} dates for ${event.title}`);
+        
         for (const date of dates) {
-          if (await checkSeats(page, event, date, url)) {
-            console.log(ts(), '🎉 БИЛЕТЫ ЗАБРОНИРОВАНЫ! Перезапуск...');
-            await delay(10_000);
-            return; // Перезапуск для новой проверки
+          console.log(ts(), `🎫 Checking date: ${date.text}`);
+          
+          await goTo(page, date.href, `DATE-${date.text}`);
+          await handleCloudflare(page);
+          
+          // Карта мест
+          if (!await waitForSelector(page, 'rect.tooltip-button', 'SEATMAP', 20000)) {
+            console.log(ts(), '❌ No seat map');
+            continue;
           }
+          
+          // Свободные места
+          const freeSeats = await page.evaluate(() => 
+            Array.from(document.querySelectorAll('rect.tooltip-button:not(.picked)')).map(el => ({
+              id: el.id,
+              x: parseFloat(el.getAttribute('x') || 0),
+              y: parseFloat(el.getAttribute('y') || 0),
+              width: parseFloat(el.getAttribute('width') || 20),
+              height: parseFloat(el.getAttribute('height') || 20)
+            }))
+          );
+          
+          console.log(ts(), `🎯 ${freeSeats.length} free seats`);
+          
+          if (freeSeats.length < CONFIG.MIN_SEATS) continue;
+          
+          // Ищем подряд
+          const rows = {};
+          freeSeats.forEach(s => {
+            const rowKey = Math.round(s.y / 20) * 20;
+            rows[rowKey] = rows[rowKey] || [];
+            rows[rowKey].push(s);
+          });
+          
+          let bestRun = null;
+          for (const rowSeats of Object.values(rows)) {
+            const sorted = rowSeats.sort((a, b) => a.x - b.x);
+            let currentRun = [sorted[0]];
+            
+            for (let i = 1; i < sorted.length; i++) {
+              if (sorted[i].x - currentRun[currentRun.length - 1].x <= 30) {
+                currentRun.push(sorted[i]);
+              } else {
+                if (currentRun.length >= CONFIG.MIN_SEATS && 
+                    (!bestRun || currentRun.length > bestRun.length)) {
+                  bestRun = currentRun.slice(0, CONFIG.PREFERRED_SEATS);
+                }
+                currentRun = [sorted[i]];
+              }
+            }
+            if (currentRun.length >= CONFIG.MIN_SEATS && 
+                (!bestRun || currentRun.length > bestRun.length)) {
+              bestRun = currentRun.slice(0, CONFIG.PREFERRED_SEATS);
+            }
+          }
+          
+          if (!bestRun) {
+            console.log(ts(), '❌ No consecutive seats');
+            continue;
+          }
+          
+          console.log(ts(), `🎉 FOUND ${bestRun.length} CONSECUTIVE SEATS!`);
+          
+          // КЛИКАЕМ МЕСТА
+          for (const seat of bestRun) {
+            if (seat.id) {
+              await page.evaluate(id => {
+                const el = document.getElementById(id);
+                if (el) el.click();
+              }, seat.id);
+            } else {
+              const cx = seat.x + seat.width / 2;
+              const cy = seat.y + seat.height / 2;
+              await page.mouse.click(cx, cy);
+            }
+            await delay(500);
+          }
+          
+          // КНОПКА ОФОРМЛЕНИЯ
+          await delay(2000);
+          const orderBtn = await page.$x("//button[contains(text(), 'Перейти до оформлення')]");
+          if (orderBtn.length) {
+            await orderBtn[0].click();
+            await delay(3000);
+            
+            // ИМЯ
+            await page.evaluate(() => {
+              document.querySelectorAll('input[name*="viewer_name"]').forEach(input => {
+                input.value = 'Кочкін Іван';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              });
+            });
+            
+            // ✅ УВЕДОМЛЕНИЕ
+            const message = `<b>🎟️ БИЛЕТЫ НАЙДЕНЫ!</b>\n<b>${event.title}</b>\n${date.text}\n${bestRun.length} мест подряд\n🔗 ${date.href}`;
+            await sendTelegram(message);
+            
+            await page.screenshot({ path: `/tmp/SUCCESS_${Date.now()}.png` });
+            console.log(ts(), '🎉 TICKETS BOOKED! Notification sent');
+            
+            // Возврат к событиям
+            await goTo(page, eventsUrl, 'BACK-AFTER-BOOK');
+          }
+          
           await delay(1000);
         }
         
-        await delay(500);
+        await delay(1000);
       }
       
-      // Следующая страница
-      const next = await page.$('a[rel="next"]');
-      if (!next) {
-        console.log(ts(), '🔄 Конец списка, пауза 5с');
-        pageNum = 1;
-        await delay(CONFIG.GLOBAL_LOOP_DELAY_MS);
-      } else {
+      // ПАГИНАЦИЯ
+      const nextBtn = await page.$('a[rel="next"]');
+      if (nextBtn) {
         pageNum++;
+        console.log(ts(), `➡️ Next page: ${pageNum}`);
+      } else {
+        pageNum = 1;
+        console.log(ts(), '🔄 Restart from page 1');
+        await delay(5000);
       }
       
     } catch (e) {
-      console.log(ts(), '❌ Ошибка сканирования:', e.message);
-      await sendTelegram(`<b>❌ Ошибка бота:</b>\n${e.message}`);
-      await delay(10_000);
+      console.log(ts(), '❌ Loop error:', e.message);
+      await delay(10000);
     }
   }
 }
 
 /** 🔥 MAIN */
 (async () => {
-  console.log(ts(), '🤖 FT TICKET BOT v2.0 START!');
-  await sendTelegram('<b>🚀 Бот запущен!</b>');
+  console.log(ts(), '🤖 FT TICKET BOT v3.0 START!');
+  await sendTelegram('<b>🚀 Бот v3.0 запущен!</b>');
+  
+  let browser, page;
   
   try {
     const exePath = await ensureChromeInstalled();
-    const browser = await launchBrowser(exePath);
-    const page = await browser.newPage();
+    browser = await launchBrowser(exePath);
+    page = await browser.newPage();
     
     await page.setViewport({ width: 1366, height: 768 });
     
     // ЛОГИН
     await login(page);
     
-    // СКАНИРОВАНИЕ
-    await scanEvents(page);
+    // БЕСКОНЕЧНЫЙ ЛУП
+    await mainLoop(page);
     
   } catch (e) {
-    console.error(ts(), '💥 FATAL:', e);
-    await sendTelegram(`<b>💥 КРИТИЧЕСКАЯ ОШИБКА:</b>\n${e.message}`);
+    console.log(ts(), '💥 FATAL:', e);
+    await sendTelegram(`<b>💥 ОШИБКА:</b>\n${e.message}`);
+  } finally {
+    if (browser) await browser.close();
   }
 })();

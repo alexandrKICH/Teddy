@@ -1,533 +1,278 @@
 /**
- * FT Ticket Bot — full, debug-heavy, continuous
- * - Uses @puppeteer/browsers to install Chrome in /tmp
- * - Launches Puppeteer with executablePath
- * - Iterates pages, performances, dates -> scans seats
- * - Selects consecutive free seats (min 2, prefer 4), clicks "Перейти до оформлення"
- * - Fills viewer name "Кочкін Іван", stops before card input and notifies in Telegram
- * - Detailed console.log for Render logs, Telegram only for important events
- *
- * IMPORTANT: This code uses credentials hardcoded below (as requested).
- * If you want to hide them, replace with process.env.* and set env vars on Render.
+ * FT Ticket Bot — Render Free
+ * 100% СТАБИЛЬНО: один логин, надёжный парсинг, бронь
  */
 
 const fs = require('fs');
 const path = require('path');
 const { install } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer');
+const express = require('express');
+const cron = require('node-cron');
 const axios = require('axios');
 
-/////////////////////// CONFIG ///////////////////////
-const CONFIG = {
+const config = {
   EMAIL: 'persik.101211@gmail.com',
   PASSWORD: 'vanya101112',
   TELEGRAM_TOKEN: '8387840572:AAH1KwnD7QKWXrXzwe0E6K2BtIlTyf2Rd9c',
-  TELEGRAM_CHAT_ID: '587511371', // user id to notify
-  ROOT_EVENTS: 'https://sales.ft.org.ua/events?hall=main&page=1',
-  BUILD_ID: '130.0.6723.58',
-  CACHE_DIR: '/tmp/chrome-cache',
-  MIN_SEATS: 2,
-  PREFERRED_SEATS: 4,
-  NAV_TIMEOUT: 120_000, // ms
-  SELECTOR_TIMEOUT: 120_000,
-  GLOBAL_LOOP_DELAY_MS: 4_000, // delay between iterations (if nothing found)
-  MAX_RETRY_ON_ERROR_MS: 30_000
+  TELEGRAM_CHAT_ID: '587511371',
+  TARGET_PERFORMANCES: ['Конотопська відьма', 'Майстер і Маргарита']
 };
-//////////////////////////////////////////////////////
 
-function ts() {
-  return new Date().toISOString();
-}
+const app = express();
+app.get('/', (req, res) => res.send('FT Ticket Bot Active!'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-async function sendTelegram(message) {
-  if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.TELEGRAM_CHAT_ID) {
-    console.log(ts(), '[TG] telegram config missing — skip send');
-    return;
-  }
+/* ------------------------------- Telegram ------------------------------- */
+async function sendTelegram(msg) {
   try {
     await axios.post(
-      `https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`,
-      {
-        chat_id: CONFIG.TELEGRAM_CHAT_ID,
-        text: message,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true
-      },
+      `https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`,
+      { chat_id: config.TELEGRAM_CHAT_ID, text: msg, parse_mode: 'HTML' },
       { timeout: 10000 }
     );
-    console.log(ts(), '[TG] sent ->', message.split('\n')[0]);
+    console.log('Telegram sent');
   } catch (e) {
-    console.log(ts(), '[TG] error:', e.response?.data?.description || e.message);
+    console.log('Telegram error:', e.message);
   }
 }
 
-async function ensureChromeInstalled() {
-  console.log(ts(), 'Ensure chrome cache dir', CONFIG.CACHE_DIR);
-  if (!fs.existsSync(CONFIG.CACHE_DIR)) fs.mkdirSync(CONFIG.CACHE_DIR, { recursive: true });
+/* ------------------------------- Browser ------------------------------- */
+async function initBrowser() {
+  const cacheDir = '/tmp/chrome-cache';
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
 
-  console.log(ts(), `Installing Chrome build ${CONFIG.BUILD_ID} to ${CONFIG.CACHE_DIR} ...`);
-  const browserInfo = await install({
-    browser: 'chrome',
-    buildId: CONFIG.BUILD_ID,
-    cacheDir: CONFIG.CACHE_DIR
-  });
-  const executablePath = browserInfo.executablePath;
-  console.log(ts(), 'Chrome installed at:', executablePath);
+  let executablePath = `${cacheDir}/chrome/linux-130.0.6723.58/chrome-linux64/chrome`;
+  if (!fs.existsSync(executablePath)) {
+    console.log('Installing Chrome...');
+    const browser = await install({ browser: 'chrome', buildId: '130.0.6723.58', cacheDir });
+    executablePath = browser.executablePath;
+  } else {
+    console.log('Using cached Chrome');
+  }
 
-  // Wait until file is fully ready (ETXTBSY fix)
-  console.log(ts(), 'Waiting for chrome executable to be ready...');
-  while (true) {
-    try {
-      const s = fs.statSync(executablePath);
-      if (s.size > 1000000) break;
-    } catch (e) {
-      // not ready yet
-    }
+  while (!fs.existsSync(executablePath) || fs.statSync(executablePath).size < 1000000) {
     await new Promise(r => setTimeout(r, 1000));
   }
-  console.log(ts(), 'Chrome executable ready:', executablePath);
-  return executablePath;
-}
 
-async function launchBrowser(executablePath) {
-  console.log(ts(), 'Launching puppeteer...');
-  const browser = await puppeteer.launch({
-    executablePath,
+  return await puppeteer.launch({
     headless: true,
+    executablePath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--single-process',
-      '--no-zygote',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows'
+      '--no-zygote'
     ],
-    timeout: 120_000
+    timeout: 120000,
+    ignoreHTTPSErrors: true
   });
-  console.log(ts(), 'Puppeteer launched');
-  return browser;
 }
 
-/**
- * Utility: robust page.goto with logging and timeout
- */
-async function goTo(page, url, label = '') {
-  try {
-    console.log(ts(), `[NAV] ${label} -> goto ${url}`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: CONFIG.NAV_TIMEOUT });
-    console.log(ts(), `[NAV] ${label} -> loaded ${page.url()}`);
-  } catch (err) {
-    console.log(ts(), `[NAV] ${label} -> goto error: ${err.message}`);
-    throw err;
-  }
-}
+/* ------------------------------- Login (один раз) ------------------------------- */
+async function ensureLoggedIn(page) {
+  console.log('→ Проверяем авторизацию...');
+  await page.goto('https://sales.ft.org.ua/cabinet/dashboard', { 
+    waitUntil: 'domcontentloaded', 
+    timeout: 90000 
+  });
 
-/**
- * Try wait for selector with long timeout and logs
- */
-async function waitForSelectorWithLog(page, selector, label = '', timeout = CONFIG.SELECTOR_TIMEOUT) {
-  try {
-    console.log(ts(), `[WAIT] ${label} waiting for selector ${selector} (timeout ${timeout}ms)`);
-    await page.waitForSelector(selector, { timeout });
-    console.log(ts(), `[WAIT] ${label} selector ${selector} found`);
-  } catch (e) {
-    console.log(ts(), `[WAIT] ${label} selector ${selector} NOT found: ${e.message}`);
-    throw e;
-  }
-}
-
-/**
- * Main checking routine.
- * - page: Puppeteer Page instance
- * - will iterate pages of event list, go to each performance link, iterate dates, check seats
- */
-async function checkAllEventsLoop(page) {
-  let pageIndex = 1;
-
-  while (true) {
-    try {
-      const eventsPageUrl = `https://sales.ft.org.ua/events?hall=main&page=${pageIndex}`;
-      await goTo(page, eventsPageUrl, `events-page-${pageIndex}`);
-      console.log(ts(), `Page title: ${await page.title()}`);
-
-      // Wait for at least some content
+  if (page.url().includes('/cabinet/login')) {
+    console.log('→ Логин...');
+    for (let i = 0; i < 3; i++) {
       try {
-        await waitForSelectorWithLog(page, '.performanceCard', `events-page-${pageIndex}`, 30_000);
+        await page.waitForSelector('input[name="email"]', { timeout: 15000 });
+        await page.type('input[name="email"]', config.EMAIL, { delay: 50 });
+        await page.type('input[name="password"]', config.PASSWORD, { delay: 50 });
+        await page.click('button.authForm__btn');
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
+        break;
       } catch {
-        // If no performanceCard found on this page -> assume empty or JS delayed; try to read pagination or proceed
-        console.log(ts(), `No .performanceCard on page ${pageIndex} (maybe empty)`);
+        console.log('→ Обновляем страницу...');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
       }
+    }
+  }
 
-      // Collect performance anchors that are visible
-      const perfLinks = await page.$$eval('a.performanceCard', nodes =>
-        nodes.map(n => ({ href: n.href, title: n.querySelector('.performanceCard__title')?.textContent?.trim() || '' }))
+  if (!page.url().includes('/cabinet/profile') && !page.url().includes('/cabinet/dashboard')) {
+    throw new Error('Login failed');
+  }
+  console.log('→ Авторизация OK');
+}
+
+/* ------------------------------- Go to Афиша ------------------------------- */
+async function goToEvents(page) {
+  console.log('→ Переход в Афишу → Основна сцена');
+  await page.goto('https://sales.ft.org.ua/events?hall=main', { 
+    waitUntil: 'domcontentloaded', 
+    timeout: 90000 
+  });
+
+  for (let i = 0; i < 5; i++) {
+    try {
+      await page.waitForSelector('a.performanceCard', { timeout: 20000 });
+      console.log('→ Афиша загружена');
+      return;
+    } catch {
+      console.log('→ Карточки не загрузились. Обновляем...');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
+    }
+  }
+  throw new Error('Failed to load performance cards after 5 attempts');
+}
+
+/* ------------------------------- Check Tickets ------------------------------- */
+async function checkTickets() {
+  console.log('=== НАЧИНАЕМ ПРОВЕРКУ ===');
+  let browser = null;
+  try {
+    browser = await initBrowser();
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(90000);
+
+    // 1. Один логин
+    await ensureLoggedIn(page);
+
+    // 2. Перейти в афишу
+    await goToEvents(page);
+
+    let pageNum = 1;
+    while (true) {
+      console.log(`\n📄 СТРАНИЦА ${pageNum}`);
+
+      // 3. Парсим карточки (ТОЧНО ПО ТВОЕМУ HTML)
+      const performances = await page.$$eval('div.col-b1400-3 > a.performanceCard', cards => 
+        cards.map(card => ({
+          title: card.querySelector('h3.performanceCard__title')?.innerText.trim() || '',
+          href: card.href || ''
+        })).filter(p => p.title && p.href)
       );
 
-      console.log(ts(), `events-page-${pageIndex} -> found ${perfLinks.length} performanceCard(s)`);
-      for (let i = 0; i < perfLinks.length; i++) {
-        const perf = perfLinks[i];
-        console.log(ts(), `-> [PERF ${i + 1}/${perfLinks.length}] ${perf.title} -> ${perf.href}`);
+      console.log(`Найдено спектаклей: ${performances.length}`);
 
-        // open performance (use new page navigation on same tab)
-        try {
-          await goTo(page, perf.href, `perf-${i + 1}`);
-        } catch (e) {
-          console.log(ts(), `perf navigate error, skip: ${e.message}`);
-          continue;
-        }
+      const targets = performances.filter(p => 
+        config.TARGET_PERFORMANCES.some(t => p.title.toLowerCase().includes(t.toLowerCase()))
+      );
 
-        // On performance page wait for date buttons (.seatsAreOver__btn)
-        try {
-          await waitForSelectorWithLog(page, '.seatsAreOver__btn', `perf-${i + 1}`, 20_000);
-        } catch {
-          console.log(ts(), `No date buttons on this performance (skip)`);
-          // go back to events page and continue
-          await goTo(page, eventsPageUrl, `back-to-events-${pageIndex}`);
-          continue;
-        }
+      if (targets.length > 0) {
+        console.log(`🎯 Целевые: ${targets.map(t => t.title).join(', ')}`);
+      }
 
-        // Collect dates
-        const dateButtons = await page.$$eval('.seatsAreOver__btn', nodes =>
-          nodes.map(n => ({ href: n.href || n.getAttribute('href'), text: n.textContent.trim() }))
+      for (const perf of targets) {
+        console.log(`\n🎭 Проверяем: ${perf.title}`);
+        await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        await page.waitForTimeout(3000);
+
+        // Даты
+        const dates = await page.$$eval('a.seatsAreOver__btn', btns => 
+          btns.map(b => ({
+            text: b.querySelector('span')?.innerText.trim() || '',
+            href: b.href || ''
+          })).filter(d => d.text && d.href)
         );
 
-        console.log(ts(), `perf ${perf.title} -> found ${dateButtons.length} date button(s)`);
+        console.log(`📅 Дат: ${dates.length}`);
 
-        for (let di = 0; di < dateButtons.length; di++) {
-          const d = dateButtons[di];
-          console.log(ts(), `--> [DATE ${di + 1}/${dateButtons.length}] ${d.text} -> ${d.href}`);
-          // open the date page (this may be same perf url or specific)
-          try {
-            await goTo(page, d.href, `perf-${i + 1}-date-${di + 1}`);
-          } catch (e) {
-            console.log(ts(), `nav to date failed: ${e.message}`);
-            continue;
-          }
+        for (const date of dates) {
+          console.log(`  📅 ${date.text}`);
+          await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
+          await page.waitForTimeout(4000);
 
-          // wait for seat map (rect.tooltip-button) — seats are svg rects
-          // Try a few strategies: wait for rect.tooltip-button OR .ticket-map or container
-          let seatSelector = 'rect.tooltip-button';
-          try {
-            await waitForSelectorWithLog(page, seatSelector, `seat-check`, 15_000);
-          } catch {
-            // No seat selector - skip this date
-            console.log(ts(), `No seat map found on this date (skip)`);
-            continue;
-          }
+          const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
+          console.log(`  🪑 Свободных мест: ${freeSeats.length}`);
 
-          // Get list of free seats (those without .picked)
-          const freeSeats = await page.$$eval('rect.tooltip-button:not(.picked)', nodes =>
-            nodes.map(n => {
-              // collect numeric attributes for adjacency decisions
-              return {
-                id: n.id || null,
-                x: parseFloat(n.getAttribute('x') || '0'),
-                y: parseFloat(n.getAttribute('y') || '0'),
-                width: parseFloat(n.getAttribute('width') || '0'),
-                height: parseFloat(n.getAttribute('height') || '0'),
-                dataTitle: n.getAttribute('data-title') || '',
-                title: n.getAttribute('title') || ''
-              };
-            })
-          );
+          if (freeSeats.length >= 2) {
+            console.log(`  НАЙДЕНО! Бронируем до 4 мест...`);
 
-          console.log(ts(), `Found ${freeSeats.length} free seat(s) on date ${d.text}`);
-
-          if (freeSeats.length === 0) {
-            console.log(ts(), `No free seats -> going back to events list`);
-            // optionally go back
-            await goTo(page, eventsPageUrl, `back-to-events-${pageIndex}`);
-            break; // proceed to next performance
-          }
-
-          // Group free seats by approximate row (y coordinate), sort by x to find consecutive
-          const byRow = {};
-          for (const s of freeSeats) {
-            const rowKey = Math.round(s.y / 10) * 10; // bucket by y ~10px
-            if (!byRow[rowKey]) byRow[rowKey] = [];
-            byRow[rowKey].push(s);
-          }
-
-          // For each row, sort by x and find runs of consecutive seats
-          let chosenRun = null;
-          for (const rowKey of Object.keys(byRow)) {
-            const rowSeats = byRow[rowKey].sort((a, b) => a.x - b.x);
-            // compute spacing threshold (median diff)
-            const diffs = [];
-            for (let k = 1; k < rowSeats.length; k++) diffs.push(rowSeats[k].x - rowSeats[k - 1].x);
-            const medianDiff = diffs.length ? diffs.sort((a, b) => a - b)[Math.floor(diffs.length / 2)] : 20;
-            const maxGap = (medianDiff || 20) + 6; // tolerance
-
-            // find runs
-            let run = [rowSeats[0]];
-            for (let k = 1; k < rowSeats.length; k++) {
-              if (rowSeats[k].x - rowSeats[k - 1].x <= maxGap) {
-                run.push(rowSeats[k]);
-              } else {
-                // evaluate run
-                if (run.length >= CONFIG.MIN_SEATS) {
-                  // prefer longer runs up to PREFERRED_SEATS
-                  if (!chosenRun || run.length > chosenRun.length) chosenRun = run.slice(0, CONFIG.PREFERRED_SEATS);
-                }
-                run = [rowSeats[k]];
-              }
+            const selected = [];
+            for (let i = 0; i < Math.min(4, freeSeats.length); i++) {
+              const seat = freeSeats[i];
+              const title = await seat.evaluate(el => el.getAttribute('data-title') || 'Место');
+              selected.push(title);
+              await seat.click({ force: true });
+              await page.waitForTimeout(300);
             }
-            // check last run
-            if (run.length >= CONFIG.MIN_SEATS) {
-              if (!chosenRun || run.length > chosenRun.length) chosenRun = run.slice(0, CONFIG.PREFERRED_SEATS);
-            }
-            if (chosenRun && chosenRun.length >= CONFIG.MIN_SEATS) break;
-          }
 
-          if (!chosenRun) {
-            console.log(ts(), `No consecutive group of ${CONFIG.MIN_SEATS}+ seats found on this date`);
-            continue; // try next date
-          }
-
-          console.log(ts(), `Chosen seats count: ${chosenRun.length}`);
-          chosenRun.forEach((s, idx) =>
-            console.log(ts(), ` - [seat ${idx + 1}] id=${s.id} x=${s.x} y=${s.y} title="${s.dataTitle || s.title}"`)
-          );
-
-          // Click seats (via evaluate using their id attributes or coordinates)
-          try {
-            // If element has id -> click by id; otherwise attempt coordinate click
-            for (const s of chosenRun) {
-              if (s.id) {
-                const clicked = await page.evaluate(id => {
-                  const el = document.getElementById(id);
-                  if (el) {
-                    el.scrollIntoView({ block: 'center', inline: 'center' });
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                    return true;
-                  }
-                  return false;
-                }, s.id);
-                console.log(ts(), `Clicked seat id=${s.id} -> ${clicked ? 'OK' : 'FAIL'}`);
-                await page.waitForTimeout(350);
-              } else {
-                // fallback: click by position
-                const cx = s.x + (s.width || 10) / 2;
-                const cy = s.y + (s.height || 10) / 2;
-                await page.mouse.click(cx, cy);
-                console.log(ts(), `Clicked seat by coords x=${cx} y=${cy}`);
-                await page.waitForTimeout(350);
-              }
-            }
-          } catch (e) {
-            console.log(ts(), 'Error clicking seats:', e.message);
-            continue; // try next date
-          }
-
-          // After selecting, try to click "Перейти до оформлення"
-          try {
-            // two possible selectors: button._f-order-btn or button[type="submit"] with span text
-            const orderBtnSelector = 'button._f-order-btn, button.ticketSelection__order-btn, button[type="submit"]._f-order-btn';
-            console.log(ts(), 'Waiting for order button...');
-            await page.waitForTimeout(500); // small wait after seat clicks
-            // Attempt to find visible order button with expected text
-            const orderBtn = await page.$x("//button[contains(., 'Перейти до оформлення') or contains(., 'Перейти до оформлення')]");
-            if (orderBtn.length) {
-              console.log(ts(), 'Found order button via XPath. Clicking...');
-              await orderBtn[0].click();
-            } else {
-              // fallback to selector
-              const s = await page.$('button._f-order-btn, .ticketSelection__order-btn, button[type="submit"]');
-              if (s) {
-                console.log(ts(), 'Found order button via selector. Clicking...');
-                await s.click();
-              } else {
-                console.log(ts(), 'Order button not found! trying to submit form...');
-                // try to submit form with id 'order'
-                await page.evaluate(() => {
-                  const f = document.getElementById('order');
-                  if (f) f.submit();
-                });
-              }
-            }
-            console.log(ts(), 'Clicked "Перейти до оформлення" - waiting for cart page...');
-            // wait for cart page's name input field
-            await page.waitForTimeout(1400);
-          } catch (e) {
-            console.log(ts(), `Order button click error: ${e.message}`);
-            continue; // try next date
-          }
-
-          // Now on ordering page - fill name fields
-          try {
-            // Wait for the viewer name input(s)
-            const nameInputSelector = 'input[name^="places"][name$="[viewer_name]"], input[name*="viewer_name"]';
-            await page.waitForSelector(nameInputSelector, { timeout: 10_000 });
-            // Fill all visible viewer_name inputs with "Кочкін Іван"
-            const filled = await page.$$eval(nameInputSelector, (nodes, value) => {
-              let cnt = 0;
-              nodes.forEach(n => {
-                if (n.offsetParent !== null) { // visible
-                  n.focus();
-                  n.value = value;
-                  n.dispatchEvent(new Event('input', { bubbles: true }));
-                  cnt++;
-                }
-              });
-              return cnt;
-            }, 'Кочкін Іван');
-            console.log(ts(), `Filled ${filled} viewer_name input(s) with "Кочкін Іван"`);
-
-            // Try to press Enter on first input to simulate proceed
-            try {
-              await page.focus(nameInputSelector);
-              await page.keyboard.press('Enter');
-              console.log(ts(), 'Pressed Enter after filling name');
-            } catch {
-              // ignore
-            }
-          } catch (e) {
-            console.log(ts(), 'No viewer_name input found on order page:', e.message);
-          }
-
-          // Wait for card input fields to appear (we stop here and notify)
-          try {
-            console.log(ts(), 'Waiting for card input (cardNum) to decide to notify user...');
-            await page.waitForSelector('input[name="cardNum"], input[name="card_number"], input[autocomplete="cc-number"]', {
-              timeout: 10_000
+            // Клик "Перейти до оформлення"
+            await page.evaluate(() => {
+              const btn = Array.from(document.querySelectorAll('button')).find(b => 
+                b.innerText.includes('Перейти до оформлення')
+              );
+              if (btn) btn.click();
             });
-            // If present => we reached payment step
-            const message = `<b>Бронь зроблена (дошов до вводу картки)</b>\nПерформанс: ${perf.title}\nДата: ${d.text}\nПосилання: ${d.href}\nМісць: ${chosenRun.length}`;
-            console.log(ts(), '[ALERT] reached card input -> sending TG notification');
-            await sendTelegram(message);
-            // Optionally, take a screenshot for debug (store in /tmp) - but not sending file, only saved in render logs if needed
-            try {
-              const scpath = `/tmp/ftbot_booking_${Date.now()}.png`;
-              await page.screenshot({ path: scpath, fullPage: false });
-              console.log(ts(), `Saved screenshot at ${scpath}`);
-            } catch (e) {
-              console.log(ts(), 'Screenshot failed:', e.message);
-            }
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
 
-            // After notifying, return to events listing to continue scanning (to not attempt to pay)
-            console.log(ts(), 'Returning to events list after notifying user.');
-            await goTo(page, eventsPageUrl, 'back-after-notify');
-            // optionally short delay
-            await page.waitForTimeout(2000);
-            // Continue scanning (we keep looping)
-          } catch (e) {
-            console.log(ts(), 'Card input not found yet — maybe extra step required. Continuing scanning.');
-            // If card input not found — maybe there is intermediate page with "Сплатити" button
-            // Try to find and click "Сплатити" buttons (but we will NOT submit payment by default)
-            const payBtn = await page.$x("//button[contains(., 'Сплатити') or contains(., 'Оплатити')]");
-            if (payBtn.length) {
-              console.log(ts(), 'Found pay button element on page — NOT pressing to avoid real payment. Notifying user instead.');
-              const message = `<b>Бронь: місця виділені</b>\nПерформанс: ${perf.title}\nДата: ${d.text}\nПосилання: ${d.href}\nМісць: ${chosenRun.length}\n(Не натискаю оплату, чекаю введення картки)`;
-              await sendTelegram(message);
-              await goTo(page, eventsPageUrl, 'back-after-pay-notify');
-            } else {
-              console.log(ts(), 'No pay button either — continuing normal scanning.');
-            }
+            // Заполнить имя
+            await page.waitForSelector('input[name="places[0][viewer_name]"]', { timeout: 15000 });
+            await page.type('input[name="places[0][viewer_name]"]', 'Кочкін Іван');
+            await page.keyboard.press('Enter');
+
+            // Клик "Сплатити"
+            await page.evaluate(() => {
+              const btn = Array.from(document.querySelectorAll('button')).find(b => 
+                b.innerText.includes('Сплатити')
+              );
+              if (btn) btn.click();
+            });
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
+
+            const msg = `
+<b>БРОНЬ ГОТОВА!</b>
+<b>${perf.title}</b>
+${date.text}
+Места: ${selected.join(', ')}
+<a href="${page.url()}">ОПЛАТИТЬ СЕЙЧАС</a>
+            `.trim();
+            await sendTelegram(msg);
+            console.log('БРОНЬ УСПЕШНА!');
+            return;
           }
+        }
 
-          // After dealing with found seats => short delay before next date
-          await page.waitForTimeout(800);
-        } // end dates loop
-
-        // After each performance processed -> go back to events page to continue
-        console.log(ts(), `Finished performance ${perf.title}, returning to events list page ${pageIndex}.`);
-        await goTo(page, eventsPageUrl, `back-to-events-${pageIndex}`);
-        // small delay
-        await page.waitForTimeout(600);
-      } // end performances loop
-
-      // Pagination: check if next page exists
-      const nextPageExists = await page.$('a.pagination__btn[rel="next"], .pagination__btn[rel="next"], a[rel="next"]');
-      if (nextPageExists) {
-        pageIndex += 1;
-        console.log(ts(), `Going to next events page -> ${pageIndex}`);
-        await page.waitForTimeout(600);
-        continue;
-      } else {
-        // no next page -> restart from 1
-        console.log(ts(), `No next page found - restarting from page 1 after short delay`);
-        pageIndex = 1;
-        await page.waitForTimeout(CONFIG.GLOBAL_LOOP_DELAY_MS);
+        // Вернуться в афишу
+        await goToEvents(page);
       }
-    } catch (err) {
-      console.log(ts(), 'Top-level error in checkAllEventsLoop:', err.message);
-      await sendTelegram(`<b>FT Bot Error:</b>\n${err.message}`);
-      // wait and then restart cycle
-      await new Promise(r => setTimeout(r, CONFIG.MAX_RETRY_ON_ERROR_MS));
+
+      // Пагинация
+      const nextBtn = await page.$('a.pagination__btn[rel="next"]');
+      if (!nextBtn) {
+        console.log('Последняя страница');
+        break;
+      }
+      await nextBtn.click();
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
+      pageNum++;
     }
-  } // end while true
+
+    console.log('Квитков не найдено');
+  } catch (err) {
+    console.error('ОШИБКА:', err.message);
+    await sendTelegram(`<b>ОШИБКА:</b>\n${err.message}`);
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+      console.log('Browser closed');
+    }
+  }
 }
 
-/** Main entry */
-(async () => {
-  console.log(ts(), 'FT Ticket Bot starting...');
+/* ------------------------------- Scheduler ------------------------------- */
+let isRunning = false;
+cron.schedule('*/5 * * * *', async () => {
+  if (isRunning) return;
+  isRunning = true;
+  const now = new Date().toLocaleString('uk-UA');
+  console.log(`\n${now} — Проверка`);
   try {
-    const executablePath = await ensureChromeInstalled();
-    const browser = await launchBrowser(executablePath);
-
-    const page = await browser.newPage();
-    page.setDefaultTimeout(CONFIG.SELECTOR_TIMEOUT);
-    page.setDefaultNavigationTimeout(CONFIG.NAV_TIMEOUT);
-    await page.setViewport({ width: 1280, height: 900 });
-
-    // Check if already logged in by visiting profile
-    try {
-      console.log(ts(), 'Checking if already logged in (visiting /cabinet/profile)...');
-      await goTo(page, 'https://sales.ft.org.ua/cabinet/profile', 'check-login');
-      const onProfile = page.url().includes('/cabinet/profile');
-      if (onProfile) {
-        console.log(ts(), 'Already on profile page -> logged in');
-      } else {
-        console.log(ts(), 'Not on profile page, need to login');
-      }
-
-      if (!onProfile) {
-        // perform login
-        console.log(ts(), 'Navigating to login page...');
-        await goTo(page, 'https://sales.ft.org.ua/cabinet/login', 'login');
-        // fill credentials and submit
-        try {
-          await waitForSelectorWithLog(page, 'input[name="email"]', 'login');
-          await page.type('input[name="email"]', CONFIG.EMAIL, { delay: 60 });
-          await page.type('input[name="password"]', CONFIG.PASSWORD, { delay: 60 });
-          // click submit
-          const submitBtn = await page.$('button[type="submit"]');
-          if (submitBtn) {
-            await submitBtn.click();
-            console.log(ts(), 'Clicked login submit');
-          } else {
-            // fallback: press Enter on password
-            await page.keyboard.press('Enter');
-          }
-          // wait for navigation to profile
-          try {
-            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25_000 });
-          } catch { /* ignore */ }
-          console.log(ts(), 'Post-login current url:', page.url());
-          if (!page.url().includes('/cabinet/profile')) {
-            console.log(ts(), 'Login did not land on profile — attempt to check page content for success');
-          } else {
-            console.log(ts(), 'Login OK');
-          }
-        } catch (e) {
-          console.log(ts(), 'Login step failed:', e.message);
-        }
-      }
-
-      // After login or if already logged in -> go to events main page
-      console.log(ts(), 'Going to events main page to start scanning...');
-      await goTo(page, 'https://sales.ft.org.ua/events?hall=main&page=1', 'start-scan');
-
-      // Start continuous scan loop
-      await checkAllEventsLoop(page);
-    } catch (e) {
-      console.log(ts(), 'Fatal error during startup:', e.message);
-      await sendTelegram(`<b>FT Bot startup error:</b>\n${e.message}`);
-    }
-  } catch (e) {
-    console.log(ts(), 'Unable to start browser / bot:', e.message);
-    await sendTelegram(`<b>FT Bot fatal:</b>\n${e.message}`);
+    await checkTickets();
+  } finally {
+    isRunning = false;
   }
-})();
+});
+
+console.log('FT Ticket Bot запущен!');
+console.log('Поиск:', config.TARGET_PERFORMANCES.join(', '));
+setTimeout(checkTickets, 5000);

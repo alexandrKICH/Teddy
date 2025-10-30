@@ -254,7 +254,8 @@ async function checkDateForTickets(page, dateUrl, performanceName, dateText) {
     
     return false;
     
-  } catch (error) {
+  } 
+  catch (error) {
     console.log(`❌ Ошибка проверки даты: ${error.message}`);
     return false;
   }

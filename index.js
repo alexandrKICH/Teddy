@@ -2,7 +2,7 @@
  * FT Ticket Bot
  *  • ищет спектакли «Конотопська відьма» и «Майстер і Маргарита»
  *  • уведомляет в Telegram, когда найдено ≥2 свободных места
- *  • работает на Render Free (puppeteer‑core + вручную установленный Chrome)
+ *  • работает на Render Free (puppeteer‑core + Chrome из install-chrome.sh)
  */
 
 const puppeteer = require('puppeteer-core');
@@ -112,7 +112,6 @@ async function checkTickets() {
       timeout: 30000
     });
 
-    // ---- получаем все спектакли (фильтрация внутри браузера) ----
     const performances = await page.$$eval('.performanceCard', cards =>
       cards
         .map(card => {
@@ -139,7 +138,6 @@ async function checkTickets() {
       return false;
     }
 
-    // ---- проверяем каждую целевую постановку ----
     for (const perf of targetPerfs) {
       console.log(`Checking: ${perf.name}`);
 
@@ -178,7 +176,7 @@ ${freeSeats.length} seats available
               `.trim();
 
               await sendTelegram(message);
-              return true; // сразу уведомляем и выходим
+              return true;
             } else {
               console.log(`No tickets for ${date.text}`);
             }
@@ -212,98 +210,5 @@ cron.schedule('*/5 * * * *', async () => {
 
 console.log('FT Ticket Bot Started!');
 
-// первый запуск через 5 сек после старта
-setTimeout(() => checkTickets(), 5000);        .filter(Boolean);
-    });
-
-    console.log(`Found ${performances.length} performances`);
-
-    const targetPerfs = performances.filter(p =>
-      config.TARGET_PERFORMANCES.some(target =>
-        p.name.toLowerCase().includes(target.toLowerCase())
-      )
-    );
-
-    console.log(`Target performances: ${targetPerfs.length}`);
-
-    if (targetPerfs.length === 0) {
-      console.log('No target performances found');
-      return false;
-    }
-
-    for (const perf of targetPerfs) {
-      console.log(`Checking: ${perf.name}`);
-
-      try {
-        await page.goto(perf.url, { waitUntil: 'networkidle2' });
-        await page.waitForTimeout(2000);
-
-        const dates = await page.$$eval('.seatsAreOver__btn', (buttons) => {
-          return buttons.map((btn) => ({
-            text: btn.textContent.trim(),
-            href: btn.href
-          }));
-        });
-
-        console.log(`Found ${dates.length} dates for ${perf.name}`);
-
-        for (const date of dates) {
-          console.log(`Checking date: ${date.text}`);
-
-          try {
-            await page.goto(date.href, { waitUntil: 'networkidle2' });
-            await page.waitForTimeout(3000);
-
-            const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
-
-            if (freeSeats.length >= 2) {
-              console.log(`FOUND ${freeSeats.length} TICKETS for ${perf.name} on ${date.text}!`);
-
-              const message = `
-<b>TICKETS FOUND!</b>
-
-<b>${perf.name}</b>
-${date.text}
-${freeSeats.length} seats
-${date.href}
-              `.trim();
-
-              await sendTelegram(message);
-              return true;
-            } else {
-              console.log(`No tickets for ${date.text}`);
-            }
-          } catch (dateError) {
-            console.log(`Date check error: ${dateError.message}`);
-          }
-        }
-      } catch (perfError) {
-        console.log(`Performance check error: ${perfError.message}`);
-      }
-    }
-
-    console.log('No tickets found this round');
-    return false;
-
-  } catch (error) {
-    console.log('Critical error:', error.message);
-    await sendTelegram(`<b>Bot error:</b> ${error.message}`);
-    return false;
-  } finally {
-    if (browser) await browser.close();
-  }
-}
-
-// Каждые 5 минут
-cron.schedule('*/5 * * * *', async () => {
-  console.log(`\n${new Date().toLocaleString('uk-UA')} - Starting check`);
-  await checkTickets();
-  console.log(`${new Date().toLocaleString('uk-UA')} - Check completed\n`);
-});
-
-console.log('FT Ticket Bot Started!');
-
 // Первый запуск через 5 секунд
-setTimeout(() => {
-  checkTickets();
-}, 5000);
+setTimeout(() => checkTickets(), 5000);

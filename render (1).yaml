@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ft-ticket-bot
+    env: node
+    plan: free
+    buildCommand: chmod +x install-chrome.sh && sudo ./install-chrome.sh && npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: true

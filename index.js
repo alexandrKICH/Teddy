@@ -642,20 +642,31 @@ async function checkTickets() {
                 continue;
               }
 
+              // Проверяем состояние страницы перед кликами
+              if (!page || page.isClosed()) {
+                console.log('  ⚠️ Страница закрыта перед бронированием, пропускаем...');
+                continue;
+              }
+
               // Кликаем на каждое место (SVG элементы требуют dispatchEvent)
               for (const id of selected) {
-                await page.evaluate((seatId) => {
-                  const seat = document.querySelector(`rect[id="${seatId}"]`);
-                  if (seat) {
-                    const clickEvent = new MouseEvent('click', {
-                      view: window,
-                      bubbles: true,
-                      cancelable: true
-                    });
-                    seat.dispatchEvent(clickEvent);
-                  }
-                }, id);
-                await delay(300);
+                try {
+                  await page.evaluate((seatId) => {
+                    const seat = document.querySelector(`rect[id="${seatId}"]`);
+                    if (seat) {
+                      const clickEvent = new MouseEvent('click', {
+                        view: window,
+                        bubbles: true,
+                        cancelable: true
+                      });
+                      seat.dispatchEvent(clickEvent);
+                    }
+                  }, id);
+                  await delay(300);
+                } catch (clickError) {
+                  console.log('  ⚠️ Ошибка клика на место, пропускаем...');
+                  continue;
+                }
               }
             } else {
               console.log('  ⚠️ Не найдено 2 или 4 мест рядом, пропускаем...');
@@ -663,17 +674,36 @@ async function checkTickets() {
             }
 
             console.log('Переход к оформлению...');
-            await page.evaluate(() => {
-              const btn = Array.from(document.querySelectorAll('button'))
-                .find(b => b.innerText.includes('Перейти до оформлення'));
-              if (btn) btn.click();
-            });
+            
+            // Проверяем состояние перед переходом
+            if (!page || page.isClosed()) {
+              console.log('  ⚠️ Страница закрыта перед оформлением, пропускаем...');
+              continue;
+            }
 
             try {
+              await page.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('button'))
+                  .find(b => b.innerText.includes('Перейти до оформлення'));
+                if (btn) btn.click();
+              });
+
               await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 120000 });
             } catch (navError) {
+              if (navError.message.includes('Target closed') || 
+                  navError.message.includes('detached') ||
+                  navError.message.includes('Execution context was destroyed')) {
+                console.log('  ⚠️ Контекст уничтожен при переходе к оформлению, пропускаем...');
+                continue;
+              }
               console.log('Таймаут перехода к оформлению, ждем...');
               await delay(10000);
+            }
+
+            // Проверяем состояние после навигации
+            if (!page || page.isClosed()) {
+              console.log('  ⚠️ Страница закрыта после навигации, пропускаем...');
+              continue;
             }
 
             console.log('Страница оформления:', page.url());
@@ -720,7 +750,18 @@ ${date.text}
             return;
           }
         }
-        await goToEvents();
+        
+        // Возвращаемся к афише только после обработки всех дат спектакля
+        try {
+          if (!page || page.isClosed()) {
+            console.log('Страница закрыта, выходим из цикла...');
+            return;
+          }
+          await goToEvents();
+        } catch (goBackError) {
+          console.log('Ошибка возврата к афише:', goBackError.message);
+          return;
+        }
       }
 
       const next = await page.$('a.pagination__btn[rel="next"]');

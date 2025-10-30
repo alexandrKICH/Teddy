@@ -1,6 +1,6 @@
 /**
  * FT Ticket Bot — Render Free
- * Один браузер | Обход Cloudflare | Правильный парсинг | Скриншот при ошибке
+ * Один браузер | Обход Cloudflare | Без waitForTimeout
  */
 
 const fs = require('fs');
@@ -9,6 +9,9 @@ const puppeteer = require('puppeteer');
 const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
+
+// Утилита вместо waitForTimeout
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const config = {
   EMAIL: 'persik.101211@gmail.com',
@@ -23,14 +26,10 @@ app.get('/', (req, res) => res.send('FT Ticket Bot Active!'));
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server: ${PORT}`));
 
-// Доступ к скриншоту
 app.get('/debug.png', (req, res) => {
   const file = '/tmp/debug.png';
-  if (fs.existsSync(file)) {
-    res.sendFile(file);
-  } else {
-    res.send('Скриншот недоступен');
-  }
+  if (fs.existsSync(file)) res.sendFile(file);
+  else res.send('Скриншот недоступен');
 });
 
 /* ------------------------------- Telegram ------------------------------- */
@@ -61,6 +60,8 @@ async function initGlobalBrowser() {
     console.log('Установка Chrome...');
     const b = await install({ browser: 'chrome', buildId: '130.0.6723.58', cacheDir });
     executablePath = b.executablePath;
+  } else {
+    console.log('Используем кэшированный Chrome');
   }
 
   browser = await puppeteer.launch({
@@ -75,6 +76,7 @@ async function initGlobalBrowser() {
       '--single-process',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-blink-features=AutomationControlled',
       '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
     ],
     defaultViewport: { width: 1366, height: 768 },
@@ -84,15 +86,19 @@ async function initGlobalBrowser() {
   page = await browser.newPage();
   page.setDefaultNavigationTimeout(90000);
 
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
   await page.setExtraHTTPHeaders({
-    'Accept-Language': 'uk-UA,uk;q=0.9',
+    'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
   });
 
   console.log('Глобальный браузер готов');
 }
 
-/* ------------------------------- Логин (ОДИН РАЗ) ------------------------------- */
+/* ------------------------------- Логин ------------------------------- */
 async function loginOnce() {
   if (!page) await initGlobalBrowser();
   console.log('=== ЛОГИН (ОДИН РАЗ) ===');
@@ -112,12 +118,12 @@ async function loginOnce() {
   }
 }
 
-/* ------------------------------- Афиша (ОБХОД CLOUDFLARE) ------------------------------- */
+/* ------------------------------- Афиша ------------------------------- */
 async function goToEvents() {
   console.log('=== ПЕРЕХОД В АФИШУ ===');
   console.log('Переход на: https://sales.ft.org.ua/events?hall=main');
 
-  await page.waitForTimeout(2000);
+  await delay(2000 + Math.random() * 3000);
 
   await page.goto('https://sales.ft.org.ua/events?hall=main', {
     waitUntil: 'domcontentloaded',
@@ -136,28 +142,28 @@ async function goToEvents() {
 
       const title = await page.title();
       if (title.includes('Just a moment') || title.includes('Cloudflare')) {
-        console.log('Cloudflare обнаружен! Обновляем...');
+        console.log('Cloudflare! Обновляем...');
+        await delay(5000 + Math.random() * 5000);
         await page.reload({ waitUntil: 'domcontentloaded' });
         continue;
       }
 
-      console.log('АФИША УСПЕШНО ЗАГРУЖЕНА!');
+      console.log('АФИША ЗАГРУЖЕНА!');
       return;
     } catch (e) {
       console.log('Карточки не найдены. Обновляем...');
       await page.reload({ waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(3000);
+      await delay(3000 + Math.random() * 3000);
     }
   }
 
   const screenshotPath = '/tmp/debug.png';
   await page.screenshot({ path: screenshotPath, fullPage: true });
-  console.log('Скриншот сохранён:', screenshotPath);
-
-  throw new Error('Не удалось загрузить афишу после 15 попыток');
+  console.log('Скриншот:', screenshotPath);
+  throw new Error('Афиша не загрузилась');
 }
 
-/* ------------------------------- Основная проверка ------------------------------- */
+/* ------------------------------- Проверка ------------------------------- */
 async function checkTickets() {
   console.log('\n=== НОВАЯ ПРОВЕРКА ===');
   if (!page) await initGlobalBrowser();
@@ -181,9 +187,9 @@ async function checkTickets() {
         })).filter(p => p.title && p.href)
       );
 
-      console.log(`Найдено спектаклей: ${performances.length}`);
+      console.log(`Спектаклей: ${performances.length}`);
       if (performances.length === 0) {
-        console.log('HTML (первые 1000):', (await page.content()).substring(0, 1000));
+        console.log('HTML:', (await page.content()).substring(0, 1000));
       }
 
       const targets = performances.filter(p =>
@@ -195,7 +201,7 @@ async function checkTickets() {
       for (const perf of targets) {
         console.log(`\nСПЕКТАКЛЬ: ${perf.title}`);
         await page.goto(perf.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
-        await page.waitForTimeout(3000);
+        await delay(3000 + Math.random() * 2000);
 
         const dates = await page.$$eval('a.seatsAreOver__btn', btns =>
           btns.map(b => ({
@@ -208,7 +214,7 @@ async function checkTickets() {
         for (const date of dates) {
           console.log(`  Дата: ${date.text}`);
           await page.goto(date.href, { waitUntil: 'domcontentloaded', timeout: 90000 });
-          await page.waitForTimeout(4000);
+          await delay(4000 + Math.random() * 2000);
 
           const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
           console.log(`  Свободно: ${freeSeats.length}`);
@@ -219,12 +225,10 @@ async function checkTickets() {
               const seat = freeSeats[i];
               const title = await seat.evaluate(el => el.getAttribute('data-title') || 'Место');
               selected.push(title);
-              console.log(`    Выбираем: ${title}`);
               await seat.click({ force: true });
-              await page.waitForTimeout(300);
+              await delay(300);
             }
 
-            console.log('  Переход к оформлению...');
             await page.evaluate(() => {
               const btn = Array.from(document.querySelectorAll('button'))
                 .find(b => b.innerText.includes('Перейти до оформлення'));
@@ -241,15 +245,13 @@ async function checkTickets() {
               if (btn) btn.click();
             });
 
-            const msg = `
-<b>БРОНЬ ГОТОВА!</b>
+            await sendTelegram(`
+<b>БРОНЬ!</b>
 <b>${perf.title}</b>
 ${date.text}
 Места: ${selected.join(', ')}
-<a href="${page.url()}">ОПЛАТИТЬ СЕЙЧАС</a>
-            `.trim();
-            await sendTelegram(msg);
-            console.log('БРОНЬ УСПЕШНА!');
+<a href="${page.url()}">ОПЛАТИТЬ</a>
+            `);
             return;
           }
         }
@@ -257,10 +259,7 @@ ${date.text}
       }
 
       const next = await page.$('a.pagination__btn[rel="next"]');
-      if (!next) {
-        console.log('Последняя страница');
-        break;
-      }
+      if (!next) break;
       await next.click();
       await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 });
       pageNum++;
@@ -269,14 +268,8 @@ ${date.text}
     console.log('Мест нет');
   } catch (err) {
     console.error('ОШИБКА:', err.message);
-    const screenshotPath = '/tmp/debug.png';
-    try {
-      await page.screenshot({ path: screenshotPath, fullPage: true });
-    } catch {}
-    await sendTelegram(`
-<b>ОШИБКА:</b> ${err.message}
-<a href="https://teddy-gql7.onrender.com/debug.png">Скриншот</a>
-    `);
+    try { await page.screenshot({ path: '/tmp/debug.png', fullPage: true }); } catch {}
+    await sendTelegram(`<b>ОШИБКА:</b> ${err.message}\n<a href="https://teddy-gql7.onrender.com/debug.png">Скриншот</a>`);
   }
 }
 

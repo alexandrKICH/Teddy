@@ -4,7 +4,6 @@
  */
 
 const fs = require('fs');
-const { install } = require('@puppeteer/browsers');
 const puppeteer = require('puppeteer');
 const express = require('express');
 const cron = require('node-cron');
@@ -148,15 +147,12 @@ async function initGlobalBrowser() {
   if (fs.existsSync('/nix/store')) {
     // Replit (NixOS)
     chromePath = '/nix/store/khk7xpgsm5insk81azy9d560yq4npf77-chromium-131.0.6778.204/bin/chromium';
-  } else if (fs.existsSync('/usr/bin/google-chrome-stable')) {
-    // Render (Ubuntu)
-    chromePath = '/usr/bin/google-chrome-stable';
   } else {
-    // Автоматический поиск (Puppeteer сам найдет)
+    // Render - используем встроенный Chrome от Puppeteer
     chromePath = undefined;
   }
 
-  console.log('Chrome path:', chromePath || 'auto-detect');
+  console.log('Chrome path:', chromePath || 'bundled-chrome');
 
   browser = await puppeteer.launch({
     headless: true,
@@ -613,21 +609,7 @@ ${date.text}
   } catch (err) {
     console.error('ОШИБКА:', err.message);
     try { await page.screenshot({ path: '/tmp/debug.png', fullPage: true }); } catch {}
-
-    // Не отправляем в Telegram технические ошибки навигации
-    const technicalErrors = [
-      'Execution context was destroyed',
-      'Navigation timeout',
-      'detached Frame',
-      'Frame was detached',
-      'Cannot find context with specified id'
-    ];
-
-    const isTechnicalError = technicalErrors.some(msg => err.message.includes(msg));
-
-    if (!isTechnicalError) {
-      await sendTelegram(`<b>ОШИБКА:</b> ${err.message}\n<a href="https://teddy-gql7.onrender.com/debug.png">Скриншот</a>`);
-    }
+    // Ошибки не отправляются в Telegram
   }
 }
 

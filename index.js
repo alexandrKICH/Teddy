@@ -187,6 +187,89 @@ cron.schedule('*/5 * * * *', async () => {
 console.log('🚀 FT Ticket Bot Started!');
 setTimeout(() => {
   checkTickets();
+}, 5000);      }).filter((p) => p.name && p.url);
+    });
+
+    console.log(`📊 Found ${performances.length} performances`);
+
+    const targetPerfs = performances.filter(p =>
+      config.TARGET_PERFORMANCES.some(target =>
+        p.name.toLowerCase().includes(target.toLowerCase())
+      )
+    );
+
+    console.log(`🎯 Target performances: ${targetPerfs.length}`);
+
+    if (targetPerfs.length === 0) {
+      console.log('❌ No target performances found');
+      return false;
+    }
+
+    for (const perf of targetPerfs) {
+      console.log(`🔍 Checking: ${perf.name}`);
+
+      try {
+        await page.goto(perf.url, { waitUntil: 'networkidle2' });
+        await page.waitForTimeout(2000);
+
+        const dates = await page.$$eval('.seatsAreOver__btn', (buttons) => {
+          return buttons.map((btn) => ({
+            text: btn.textContent.trim(),
+            href: btn.href
+          }));
+        });
+
+        console.log(`📅 Found ${dates.length} dates for ${perf.name}`);
+
+        for (const date of dates) {
+          console.log(`⏰ Checking date: ${date.text}`);
+
+          try {
+            await page.goto(date.href, { waitUntil: 'networkidle2' });
+            await page.waitForTimeout(3000);
+
+            const freeSeats = await page.$$('rect.tooltip-button:not(.picked)');
+
+            if (freeSeats.length >= 2) {
+              console.log(`🎉 FOUND ${freeSeats.length} TICKETS for ${perf.name} on ${date.text}!`);
+
+              const message = `🚨 <b>TICKETS FOUND!</b>\n\n🎭 <b>${perf.name}</b>\n📅 ${date.text}\n🎫 ${freeSeats.length} seats\n🔗 ${date.href}`;
+              await sendTelegram(message);
+
+              return true;
+            } else {
+              console.log(`❌ No tickets for ${date.text}`);
+            }
+          } catch (dateError) {
+            console.log(`❌ Date check error: ${dateError.message}`);
+          }
+        }
+      } catch (perfError) {
+        console.log(`❌ Performance check error: ${perfError.message}`);
+      }
+    }
+
+    console.log('❌ No tickets found this round');
+    return false;
+
+  } catch (error) {
+    console.log('💥 Critical error:', error.message);
+    await sendTelegram(`❌ Bot error: ${error.message}`);
+    return false;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+cron.schedule('*/5 * * * *', async () => {
+  console.log(`\n⏰ ${new Date().toLocaleString('uk-UA')} - Starting check`);
+  await checkTickets();
+  console.log(`⏰ ${new Date().toLocaleString('uk-UA')} - Check completed\n`);
+});
+
+console.log('🚀 FT Ticket Bot Started!');
+setTimeout(() => {
+  checkTickets();
 }, 5000);        return [rowSeats[i], rowSeats[i + 1]];
       }
     }

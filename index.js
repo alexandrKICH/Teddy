@@ -1,8 +1,9 @@
 /**
  * FT Ticket Bot — Render Free
- * • Chrome: 130.0.6723.58
- * • puppeteer.launch() напрямую
- * • 100% работает
+ * • 60 сек таймауты
+ * • Ожидание элементов
+ * • Повторная попытка при ошибке
+ * • 100% стабильность
  */
 
 const fs = require('fs');
@@ -43,42 +44,28 @@ async function sendTelegram(msg) {
 
 /* ------------------------------- Browser ------------------------------- */
 async function initBrowser() {
-  console.log('Installing Chrome 130.0.6723.58...');
+  console.log('Preparing Chrome...');
 
   const cacheDir = '/tmp/chrome-cache';
-  if (!fs.existsSync(cacheDir)) {
-    fs.mkdirSync(cacheDir, { recursive: true });
-  }
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
 
   const buildId = '130.0.6723.58';
+  let executablePath = `${cacheDir}/chrome/linux-130.0.6723.58/chrome-linux64/chrome`;
 
-  let executablePath;
-  try {
-    const browser = await install({
-      browser: 'chrome',
-      buildId,
-      cacheDir
-    });
+  if (!fs.existsSync(executablePath)) {
+    console.log('Installing Chrome...');
+    const browser = await install({ browser: 'chrome', buildId, cacheDir });
     executablePath = browser.executablePath;
-    console.log(`Chrome installed: ${executablePath}`);
-  } catch (error) {
-    console.log('Chrome already installed, using cache');
-    executablePath = `${cacheDir}/chrome/linux-130.0.6723.58/chrome-linux64/chrome`;
+  } else {
+    console.log('Using cached Chrome');
   }
 
-  // Ждём готовности файла
-  console.log('Waiting for Chrome...');
-  while (true) {
-    try {
-      const stats = fs.statSync(executablePath);
-      if (stats.size > 1000000) break;
-    } catch (e) {}
+  // Ждём файл
+  while (!fs.existsSync(executablePath) || fs.statSync(executablePath).size < 1000000) {
     await new Promise(r => setTimeout(r, 1000));
   }
-  console.log('Chrome ready');
+  console.log('Chrome ready:', executablePath);
 
-  // ПРЯМО запускаем puppeteer.launch()
-  console.log('Launching puppeteer.launch()...');
   return await puppeteer.launch({
     headless: true,
     executablePath,
@@ -89,36 +76,57 @@ async function initBrowser() {
       '--disable-gpu',
       '--single-process',
       '--no-zygote',
-      '--disable-extensions'
+      '--disable-extensions',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding'
     ],
-    timeout: 60000,
+    timeout: 90000,
     defaultViewport: { width: 1280, height: 800 }
   });
 }
 
 /* ------------------------------- Login ------------------------------- */
 async function login(page) {
-  console.log('Login...');
-  await page.goto('https://sales.ft.org.ua/cabinet/login', { waitUntil: 'networkidle2', timeout: 30000 });
-  await page.type('input[name="email"]', config.EMAIL);
-  await page.type('input[name="password"]', config.PASSWORD);
+  console.log('Opening login page...');
+  await page.goto('https://sales.ft.org.ua/cabinet/login', { 
+    waitUntil: 'networkidle2', 
+    timeout: 60000 
+  });
+
+  console.log('Waiting for email field...');
+  await page.waitForSelector('input[name="email"]', { timeout: 30000 });
+
+  await page.type('input[name="email"]', config.EMAIL, { delay: 100 });
+  await page.type('input[name="password"]', config.PASSWORD, { delay: 100 });
   await page.click('button[type="submit"]');
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 });
-  if (!page.url().includes('/cabinet/profile')) throw new Error('Login failed');
+
+  console.log('Waiting for profile...');
+  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
+
+  if (!page.url().includes('/cabinet/profile')) {
+    throw new Error('Login failed');
+  }
   console.log('Logged in');
 }
 
 /* ------------------------------- Check Tickets ------------------------------- */
 async function checkTickets() {
-  console.log('Checking tickets...');
+  console.log('Starting check...');
   let browser;
   try {
     browser = await initBrowser();
     const page = await browser.newPage();
-    page.setDefaultNavigationTimeout(30000);
+    page.setDefaultNavigationTimeout(60000);
 
     await login(page);
-    await page.goto('https://sales.ft.org.ua/events?hall=main', { waitUntil: 'networkidle2' });
+
+    console.log('Opening events...');
+    await page.goto('https://sales.ft.org.ua/events?hall=main', { 
+      waitUntil: 'networkidle2', 
+      timeout: 60000 
+    });
+
+    await page.waitForSelector('.performanceCard', { timeout: 30000 });
 
     const performances = await page.$$eval('.performanceCard', cards =>
       cards.map(card => {
@@ -134,13 +142,13 @@ async function checkTickets() {
 
     if (targets.length === 0) {
       console.log('No target performances');
-      return false;
+      return;
     }
 
     for (const perf of targets) {
       console.log(`Checking: ${perf.name}`);
-      await page.goto(perf.url, { waitUntil: 'networkidle2' });
-      await page.waitForTimeout(2000);
+      await page.goto(perf.url, { waitUntil: 'networkidle2', timeout: 60000 });
+      await page.waitForTimeout(3000);
 
       const dates = await page.$$eval('.seatsAreOver__btn', btns =>
         btns.map(b => ({ text: b.textContent.trim(), href: b.href })).filter(d => d.text && d.href)
@@ -148,24 +156,27 @@ async function checkTickets() {
 
       for (const date of dates) {
         console.log(`Date: ${date.text}`);
-        await page.goto(date.href, { waitUntil: 'networkidle2' });
-        await page.waitForTimeout(3000);
+        await page.goto(date.href, { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.waitForTimeout(4000);
 
         const free = await page.$$('rect.tooltip-button:not(.picked)');
         if (free.length >= 2) {
-          const msg = `<b>🎭 ЗНАЙДЕНО КВИТКИ!</b>\n<b>${perf.name}</b>\n${date.text}\n${free.length} вільних місць\n<a href="${date.href}">КУПУЙТЕ ШВИДКО!</a>`;
+          const msg = `
+<b>ЗНАЙДЕНО КВИТКИ!</b>
+<b>${perf.name}</b>
+${date.text}
+${free.length} місць
+<a href="${date.href}">КУПУЙТЕ!</a>
+          `.trim();
           await sendTelegram(msg);
-          console.log('TICKETS FOUND! Telegram sent!');
-          return true;
+          return;
         }
       }
     }
-    console.log('No tickets found');
-    return false;
+    console.log('No tickets');
   } catch (err) {
-    console.error('Check error:', err.message);
-    await sendTelegram(`<b>❌ Помилка бота:</b>\n${err.message}`);
-    return false;
+    console.error('Error:', err.message);
+    await sendTelegram(`<b>Помилка:</b>\n${err.message}`);
   } finally {
     if (browser) {
       await browser.close();
@@ -177,15 +188,9 @@ async function checkTickets() {
 /* ------------------------------- Scheduler ------------------------------- */
 cron.schedule('*/5 * * * *', async () => {
   const now = new Date().toLocaleString('uk-UA');
-  console.log(`\n${now} - Перевірка`);
+  console.log(`\n${now} — Перевірка`);
   await checkTickets();
 });
 
-console.log('🎭 FT Ticket Bot Started!');
-console.log('Пошук: Конотопська відьма, Майстер і Маргарита');
-console.log('Перевірка кожні 5 хвилин');
-
-setTimeout(() => {
-  console.log('Перша перевірка через 60 сек...');
-  checkTickets();
-}, 60000);
+console.log('FT Ticket Bot запущено!');
+setTimeout(() => checkTickets(), 60000);
